@@ -1,0 +1,3 @@
+[submodule "LibBrain"]
+	path = LibBrain
+	url = https://github.com/dagush/LibBrain.git

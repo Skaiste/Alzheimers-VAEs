@@ -11,18 +11,19 @@ For data analysis and processing, a Schaefer 2018 400-region partitioning was ap
 
 ## Implementation Checklist
 - [ ] Framework base
+- [ ] Data pre-processing
+- [ ] Baseline models. Take into account that the data is parcelated, test architectures used for 3D medical images, like [AutoencoderKlMaisi](https://github.com/Project-MONAI/MONAI/blob/dev/monai/apps/generation/maisi/networks/autoencoderkl_maisi.py) or [BetaVAE](https://github.com/libilab/rsfMRI-VAE/blob/main/fMRIVAE_Model.py)
+- [ ] Model improvements
 - [ ] Framework for parameter tuning
-- [ ] Baseline model
 - [ ] Evaluation framework
 
-
 ## Report Writing Checklist
-- [ 0% ] State of the art
-- [ 0% ] Specification and design of the solution
-- [ 0% ] Development of the proposal/technique/work that has been carried out
-- [ 0% ] Experimentation and evaluation of the proposal/technique/work
-- [ 0% ] Sustainability analysis and ethical implications
-- [ 0% ] Summary, Introduction, motivation and objectives, Conclusion
+- [ ] [ 0% ] State of the art
+- [ ] [ 0% ] Specification and design of the solution
+- [ ] [ 0% ] Development of the proposal/technique/work that has been carried out
+- [ ] [ 0% ] Experimentation and evaluation of the proposal/technique/work
+- [ ] [ 0% ] Sustainability analysis and ethical implications
+- [ ] [ 0% ] Summary, Introduction, motivation and objectives, Conclusion
 
 
 In the end report should contain:
