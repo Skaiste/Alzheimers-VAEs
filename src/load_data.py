@@ -121,7 +121,7 @@ def load_adni_n193(
     
     Args:
         data_dir: Path to data directory. If None, uses get_data_dir().
-                  Should point to directory containing 'ADNI-B/N193_no_filt/' subdirectory.
+                  Should point to directory containing all the '.mat' files.
         discard_AD_ABminus: If True, discard AD subjects with ABeta- status.
         SchaeferSize: Parcellation size (400 or 1000).
         use_pvc: If True, use partial volume correction for ABeta and Tau.
@@ -184,7 +184,6 @@ def load_adni(
     Convenience function to load ADNI-B data with common configurations.
     
     Args:
-        dataset: Which dataset to load ('n193' or 'n238rev').
         data_dir: Path to data directory. If None, uses get_data_dir().
         discard_AD_ABminus: If True, discard AD subjects with ABeta- status.
         use_pvc: If True, use partial volume correction for ABeta and Tau.
