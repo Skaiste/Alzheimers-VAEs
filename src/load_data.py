@@ -231,7 +231,7 @@ class ADNIDataset(Dataset):
     Each sample is a flattened timeseries (N_ROIs * T_timepoints).
     """
     
-    def __init__(self, timeseries_data, labels=None, flatten=True):
+    def __init__(self, timeseries_data, labels=None, flatten=True, normalize=True, data_min=None, data_max=None):
         """
         Initialize ADNI Dataset.
         
@@ -241,8 +241,12 @@ class ADNIDataset(Dataset):
             labels: Optional list of labels for each sample
             flatten: If True, flatten timeseries to 1D (N_ROIs * T_timepoints)
                     If False, keep 2D shape (N_ROIs, T_timepoints)
+            normalize: If True, normalize data to [0, 1] range using min-max scaling
+            data_min: Minimum value for normalization (if None, computed from data)
+            data_max: Maximum value for normalization (if None, computed from data)
         """
         self.flatten = flatten
+        self.normalize = normalize
         
         # Convert to numpy arrays and store
         self.data = []
@@ -253,7 +257,39 @@ class ADNIDataset(Dataset):
             self.data.append(ts_array)
         
         self.data = np.array(self.data)
+        
+        # Normalize data if requested
+        if normalize:
+            self._normalize_data(data_min, data_max)
+        else:
+            self.data_min = None
+            self.data_max = None
+
         self.labels = labels if labels is not None else [None] * len(self.data)
+        
+    
+    def _normalize_data(self, data_min=None, data_max=None):
+        """
+        Normalize data to [0, 1] range using min-max scaling.
+        
+        Args:
+            data_min: Minimum value for normalization (if None, computed from data)
+            data_max: Maximum value for normalization (if None, computed from data)
+        """
+        if data_min is None:
+            data_min = self.data.min()
+        if data_max is None:
+            data_max = self.data.max()
+        
+        self.data_min = data_min
+        self.data_max = data_max
+        
+        # Avoid division by zero
+        if data_max > data_min:
+            self.data = (self.data - data_min) / (data_max - data_min)
+        else:
+            # All values are the same, set to 0.5
+            self.data = np.zeros_like(self.data) + 0.5
         
     def __len__(self):
         return len(self.data)
@@ -414,8 +450,21 @@ def prepare_data_loaders(
                 data_loader, groups=test_groups
             )
     
-    # Create PyTorch datasets
-    train_dataset = ADNIDataset(train_data, train_labels, flatten=flatten)
+    # Compute normalization statistics from training data
+    # Convert training data to numpy array to compute min/max
+    train_data_array = []
+    for ts in train_data:
+        ts_array = np.array(ts)
+        if flatten:
+            ts_array = ts_array.flatten()
+        train_data_array.append(ts_array)
+    train_data_array = np.array(train_data_array)
+    data_min = train_data_array.min()
+    data_max = train_data_array.max()
+    
+    # Create PyTorch datasets with normalization
+    train_dataset = ADNIDataset(train_data, train_labels, flatten=flatten, 
+                                normalize=True, data_min=data_min, data_max=data_max)
     train_loader = DataLoader(
         train_dataset, batch_size=batch_size, shuffle=shuffle_train
     )
@@ -423,11 +472,14 @@ def prepare_data_loaders(
     result = {
         'train_loader': train_loader,
         'input_dim': input_dim,
-        'num_samples': {'train': len(train_dataset)}
+        'num_samples': {'train': len(train_dataset)},
+        'data_min': data_min,
+        'data_max': data_max
     }
     
     if val_data:
-        val_dataset = ADNIDataset(val_data, val_labels, flatten=flatten)
+        val_dataset = ADNIDataset(val_data, val_labels, flatten=flatten,
+                                  normalize=True, data_min=data_min, data_max=data_max)
         val_loader = DataLoader(
             val_dataset, batch_size=batch_size, shuffle=False
         )
@@ -435,7 +487,8 @@ def prepare_data_loaders(
         result['num_samples']['val'] = len(val_dataset)
     
     if test_data:
-        test_dataset = ADNIDataset(test_data, test_labels, flatten=flatten)
+        test_dataset = ADNIDataset(test_data, test_labels, flatten=flatten,
+                                  normalize=True, data_min=data_min, data_max=data_max)
         test_loader = DataLoader(
             test_dataset, batch_size=batch_size, shuffle=False
         )

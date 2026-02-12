@@ -10,9 +10,22 @@ For this study, real patient data obtained from the ADNI database, specifically 
 The data were obtained using fMRI (functional magnetic resonance imaging), a neuroimaging technique that measures brain activity by detecting changes in blood flow associated with neuronal activity. This method allows the study of the functional connectivity of the brain and is fundamental for the analysis of neurodegenerative diseases such as Alzheimer’s. It should be noted that the ADNI data were captured with a time interval of 3 seconds between samples. According to the Nyquist theorem, this implies that the maximum frequency that can be reliably analyzed is 0.18 Hz. In this study, however, the analysis was limited to a frequency band between 0.008 Hz and 0.08 Hz, as this range has been shown to contain relevant information for the study of resting-state brain connectivity. 
 For data analysis and processing, a Schaefer 2018 400-region partitioning was applied, a brain segmentation method that divides the cerebral cortex into 400 distinct areas based on functional characteristics. This partitioning facilitates the extraction of brain activity patterns in a structured and coherent manner.
 
+## Setup
+Requirements: python 3.13+ & [uv](https://docs.astral.sh/uv/guides/install-python/)
+To setup project run:
+```bash
+uv sync
+```
+
+To run training make sure the data (`.mat` files) are in the `data` directory, then run command:
+```bash
+uv run main.py
+```
+
 ## Implementation Checklist
 - [x] Data Loading
-- [ ] Framework base
+- [x] Training Framework base
+- [ ] Inference Framework base
 - [ ] Data pre-processing
 - [ ] Baseline models
 - [ ] Model improvements

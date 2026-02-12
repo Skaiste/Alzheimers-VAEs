@@ -5,6 +5,7 @@ This script loads ADNI-B data and can be used for training models or running inf
 """
 
 import argparse
+import os
 from src.load_data import load_adni, prepare_data_loaders
 
 
@@ -91,15 +92,36 @@ def main():
     elif args.mode == 'train':
         # TODO: Add training logic here
         print("\n" + "=" * 60)
-        print("Training mode - TODO: Implement training logic")
+        print("Training mode")
         print("=" * 60)
 
+        # running on mac
+        device = 'mps'
+
+        from src.models import BasicVAE
+        from src.train import train_vae_basic, plot_training_history
+        model = BasicVAE(input_dim=78800, device=device)
+        # train full model first    
+        history = train_vae_basic(
+            model,
+            loaders['train_loader'],
+            loaders['val_loader'],
+            num_epochs=40,
+            learning_rate=1e-3,
+            device=device
+        )
+        os.makedirs('plots', exist_ok=True)
+        plot_training_history(history, save_path='plots/basicVAE_training_history.png', show=False)
+        print("Training history saved to plots/basicVAE_training_history.png")
+        print("Training complete!")
+        print("=" * 60)
+        
     elif args.mode == 'inference':
         # TODO: Add inference logic here
         print("\n" + "=" * 60)
         print("Inference mode - TODO: Implement inference logic")
         print("=" * 60)
-    
+
     return data_loader, loaders
 
 
