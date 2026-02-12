@@ -31,6 +31,36 @@ def loss_function(x, x_hat, mu, log_var, error_per_feature=True):
 
     return recon + kld, recon, kld
 
+import math
+
+def denormalise_losses(recon, kld, min_val, max_val, input_dim, latent_dim, error_per_feature=True):
+
+    R = max_val - min_val  # global range
+
+    # Convert recon to per-feature MSE (normalized space)
+    if not error_per_feature:
+        mse_norm_per_feature = recon / input_dim
+    else:
+        mse_norm_per_feature = recon
+
+    rmse_norm_per_feature = math.sqrt(mse_norm_per_feature)
+
+    # Convert to original units
+    mse_orig_per_feature = mse_norm_per_feature * (R ** 2)
+    rmse_orig_per_feature = rmse_norm_per_feature * R
+
+    # KL is unitless — just make it interpretable
+    kld_per_dim = kld / latent_dim
+
+    return {
+        "mse_norm_per_feature": mse_norm_per_feature,
+        "rmse_norm_per_feature": rmse_norm_per_feature,
+        "mse_orig_per_feature": mse_orig_per_feature,
+        "rmse_orig_per_feature": rmse_orig_per_feature,
+        "kld_per_dim": kld_per_dim,
+    }
+
+
 def train_vae_basic(
     model,
     train_loader,
@@ -49,7 +79,14 @@ def train_vae_basic(
         'val_reproduction_loss': [],
         'val_KLD': [],
     }
-    best_val_loss = float('inf')
+    best_model_losses = {
+        'train_loss': float('inf'),
+        'train_reproduction_loss': float('inf'),
+        'train_KLD': float('inf'),
+        'val_loss': float('inf'),
+        'val_reproduction_loss': float('inf'),
+        'val_KLD': float('inf'),
+    }
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     for epoch in range(num_epochs):
         train_loss = 0.0
@@ -99,11 +136,27 @@ def train_vae_basic(
 
         # select best model based on validation loss
         avg_val_loss = val_loss / num_val_batches
-        if avg_val_loss < best_val_loss:
-            best_val_loss = avg_val_loss
+        if avg_val_loss < best_model_losses['val_loss']:
+            best_model_losses['val_loss'] = avg_val_loss
+            best_model_losses['val_reproduction_loss'] = val_reproduction_loss / num_val_batches
+            best_model_losses['val_KLD'] = val_KLD / num_val_batches
+            best_model_losses['train_loss'] = train_loss / num_batches
+            best_model_losses['train_reproduction_loss'] = train_reproduction_loss / num_batches
+            best_model_losses['train_KLD'] = train_KLD / num_batches
             torch.save(model.state_dict(), f'{save_dir}/best_model.pt')
-
+            
     print("Training complete!")
+
+    print("Calculated denormalised losses for best model:")
+    train_unnorm_losses = denormalise_losses(train_reproduction_loss, train_KLD, train_loader.dataset.data_min, train_loader.dataset.data_max, 78800, 64, loss_per_feature)
+    val_unnorm_losses = denormalise_losses(val_reproduction_loss, val_KLD, train_loader.dataset.data_min, train_loader.dataset.data_max, 78800, 64, loss_per_feature)
+    print(f"Train:")
+    print(f"\tRMSE per feature: {train_unnorm_losses['rmse_orig_per_feature']}")
+    print(f"\tKLD per dim: {train_unnorm_losses['kld_per_dim']}")
+    print(f"Validation:")
+    print(f"\tRMSE per feature: {val_unnorm_losses['rmse_orig_per_feature']}")
+    print(f"\tKLD per dim: {val_unnorm_losses['kld_per_dim']}")
+
 
     return history
 

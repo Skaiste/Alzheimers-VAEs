@@ -468,6 +468,8 @@ def prepare_data_loaders(
     train_loader = DataLoader(
         train_dataset, batch_size=batch_size, shuffle=shuffle_train
     )
+    train_loader.data_min = data_min
+    train_loader.data_max = data_max
     
     result = {
         'train_loader': train_loader,
@@ -483,6 +485,8 @@ def prepare_data_loaders(
         val_loader = DataLoader(
             val_dataset, batch_size=batch_size, shuffle=False
         )
+        val_loader.data_min = data_min
+        val_loader.data_max = data_max
         result['val_loader'] = val_loader
         result['num_samples']['val'] = len(val_dataset)
     
@@ -492,6 +496,8 @@ def prepare_data_loaders(
         test_loader = DataLoader(
             test_dataset, batch_size=batch_size, shuffle=False
         )
+        test_loader.data_min = data_min
+        test_loader.data_max = data_max
         result['test_loader'] = test_loader
         result['num_samples']['test'] = len(test_dataset)
     

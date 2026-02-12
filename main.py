@@ -6,6 +6,7 @@ This script loads ADNI-B data and can be used for training models or running inf
 
 import argparse
 import os
+import torch
 from src.load_data import load_adni, prepare_data_loaders
 
 
@@ -113,14 +114,29 @@ def main():
         os.makedirs('plots', exist_ok=True)
         plot_training_history(history, save_path='plots/basicVAE_training_history.png', show=False)
         print("Training history saved to plots/basicVAE_training_history.png")
-        print("Training complete!")
         print("=" * 60)
         
     elif args.mode == 'inference':
         # TODO: Add inference logic here
         print("\n" + "=" * 60)
-        print("Inference mode - TODO: Implement inference logic")
+        print("Inference mode")
         print("=" * 60)
+
+        # running on mac
+        device = 'mps'
+
+        from src.models import BasicVAE
+        from src.inference import inference_vae_basic
+        model = BasicVAE(input_dim=78800, device=device)
+        model.load_state_dict(torch.load('checkpoints/best_model.pt'))
+        inference_vae_basic(
+            model,
+            loaders['test_loader'],
+            device=device,
+            loss_per_feature=True,
+            num_examples=3,
+            plot_dir='plots'
+        )
 
     return data_loader, loaders
 
