@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+import yaml
 
 from training_tracker import TrainingResultsManager
 
@@ -18,6 +19,13 @@ def _default_results_dir() -> Path:
     if env_value:
         return Path(env_value)
     return Path("results")
+
+
+def _default_config_dir() -> Path:
+    env_value = os.environ.get("TRAINING_TRACKER_CONFIG_DIR")
+    if env_value:
+        return Path(env_value)
+    return Path("config")
 
 
 def _parse_iso(ts: str) -> datetime:
@@ -125,6 +133,29 @@ def _render_kv_section(title: str, data: dict | None) -> None:
         return
     rows = [{"Field": key, "Value": _to_display_value(value)} for key, value in data.items()]
     st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+
+
+def _write_yaml(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(payload, handle, sort_keys=False, default_flow_style=False)
+
+
+def _overwrite_configs_from_metadata(metadata: dict, config_dir: Path) -> None:
+    model_params = metadata.get("model_params")
+    training_params = metadata.get("training_params")
+    data_params = metadata.get("data_params")
+
+    if not isinstance(model_params, dict):
+        raise ValueError("model_params missing or invalid in metadata")
+    if not isinstance(training_params, dict):
+        raise ValueError("training_params missing or invalid in metadata")
+    if not isinstance(data_params, dict):
+        raise ValueError("data_params missing or invalid in metadata")
+
+    _write_yaml(config_dir / "model.yml", {"model": model_params})
+    _write_yaml(config_dir / "training.yml", {"training": training_params})
+    _write_yaml(config_dir / "data.yml", data_params)
 
 
 def main() -> None:
@@ -264,6 +295,15 @@ def main() -> None:
         _render_kv_section("Artifacts", metadata.get("artifacts"))
         st.markdown("**Tags**")
         st.write(", ".join(metadata.get("tags", [])) or "None")
+
+        st.markdown("---")
+        if st.button("Overwrite current config with this experiment", key=f"overwrite_{experiment_id}"):
+            try:
+                _overwrite_configs_from_metadata(metadata, _default_config_dir())
+            except Exception as exc:
+                st.error(f"Failed to overwrite configs: {exc}")
+            else:
+                st.success("Updated config/model.yml, config/training.yml, and config/data.yml")
 
     with tabs[2]:
         st.subheader("Metadata JSON")
