@@ -1,6 +1,6 @@
-[submodule "LibBrain"]
-	path = LibBrain
+[submodule "src/3rd_party/LibBrain"]
+	path = src/3rd_party/LibBrain
 	url = https://github.com/dagush/LibBrain.git
-[submodule "WholeBrain"]
-	path = WholeBrain
-	url = https://github.com/Skaiste/WholeBrain
+[submodule "src/3rd_party/rsfMRI-VAE"]
+	path = src/3rd_party/rsfMRI-VAE
+	url = https://github.com/libilab/rsfMRI-VAE.git
