@@ -208,7 +208,9 @@ __marimo__/
 
 data/
 models/
+!src/models
 checkpoints/
+results/
 
 .DS_Store
 

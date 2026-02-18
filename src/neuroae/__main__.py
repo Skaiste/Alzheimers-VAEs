@@ -9,16 +9,37 @@ import os
 import torch
 import pathlib
 import yaml
+from copy import deepcopy
 from neuronumba.tools.filters import BandPassFilter
 
 from .utils import *
 from .load_data import load_adni, prepare_data_loaders
+from training_tracker import TrainingResultsManager
 
 
 def load_config(config_path):
     with open(config_path, 'r') as file:
         conf = yaml.load(file, Loader=yaml.FullLoader)
     return conf
+
+
+def _build_training_summary(history):
+    val_losses = history.get('val_loss', [])
+    train_losses = history.get('train_loss', [])
+    best_epoch = None
+    best_val = None
+    if val_losses:
+        best_index = min(range(len(val_losses)), key=lambda idx: val_losses[idx])
+        best_epoch = best_index + 1
+        best_val = float(val_losses[best_index])
+
+    return {
+        'num_epochs': len(train_losses),
+        'best_epoch': best_epoch,
+        'best_val_loss': best_val,
+        'final_train_loss': float(train_losses[-1]) if train_losses else None,
+        'final_val_loss': float(val_losses[-1]) if val_losses else None,
+    }
 
 def main():
     """Main function for training and inference."""
@@ -165,6 +186,15 @@ def main():
             print("No model load path provided, training from scratch")
 
         training_config = load_config(args.training_config)
+        tracker = TrainingResultsManager(results_dir=project_path / "results")
+        experiment_id = tracker.build_experiment_id(
+            model_type=model_name,
+            model_params=model_config.get('model', {}),
+            training_params=training_config.get('training', {}),
+            data_params=data_config,
+        )
+        print(f"Experiment ID: {experiment_id}")
+
         pathlib.Path(training_config['training']['save_dir']).mkdir(parents=True, exist_ok=True)
         history = train_vae_basic(
             model,
@@ -176,11 +206,31 @@ def main():
             kld_weight=float(training_config['training']['kld_weight']),
             device=args.device,
             save_dir=training_config['training']['save_dir'],
-            name=training_config['training']['name'],
+            name=experiment_id,
         )
         os.makedirs('plots', exist_ok=True)
-        plot_training_history(history, save_path=f'plots/{training_config["training"]["name"]}_training_history.png', show=False)
-        print(f'Training history saved to plots/{training_config["training"]["name"]}_training_history.png')
+        plot_training_history(history, save_path=f'plots/{experiment_id}_training_history.png', show=False)
+        print(f'Training history saved to plots/{experiment_id}_training_history.png')
+
+        model_artifact = pathlib.Path(training_config['training']['save_dir']) / f"{experiment_id}_model.pt"
+        experiment_metadata = {
+            'experiment_id': experiment_id,
+            'status': 'completed',
+            'model_type': model_name,
+            'summary': _build_training_summary(history),
+            'model_params': deepcopy(model_config.get('model', {})),
+            'training_params': deepcopy(training_config.get('training', {})),
+            'data_params': deepcopy(data_config),
+            'tags': [training_config['training']['name']],
+            'artifacts': {
+                'model_path': str(model_artifact),
+            },
+        }
+        tracked_experiment_id = tracker.register_experiment(
+            metadata=experiment_metadata,
+            history=history,
+        )
+        print(f'Tracked training experiment: {tracked_experiment_id}')
         print("=" * 60)
         
     elif args.mode == 'inference':
