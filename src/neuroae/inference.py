@@ -184,6 +184,9 @@ def inference_vae_basic(
     plot_dir=None,
     sample_dir=None
 ):
+    device = torch.device(device)
+    model = model.to(device)
+
     model.eval()
     all_losses = []
     all_recons = []
@@ -194,7 +197,8 @@ def inference_vae_basic(
     with torch.no_grad():
         for batch_idx, (data, _) in enumerate(data_loader):
             x = data.to(device)
-            recon_x, mu, logvar, z = model(x)
+            model_out = model(x)
+            recon_x, mu, logvar = model_out[:3]
             loss, recon, kld = loss_function(x, recon_x, mu, logvar, loss_per_feature)
             if len(top_n_examples) < num_examples:
                 top_n_examples = [(x[i], recon_x[i]) for i in range(num_examples)]

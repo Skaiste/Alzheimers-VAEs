@@ -25,6 +25,7 @@ dependencies = [
     "neuronumba @ git+https://github.com/neich/neuronumba.git@main#subdirectory=src",
     "scikit-learn>=1.6.1",
     "streamlit",
+    "monai>=1.5.2",
 ]
 
 [project.scripts]

@@ -27,6 +27,30 @@ def loss_function(x, x_hat, mu, log_var, error_per_feature=True, kld_weight=1.0)
     return recon + kld_weight * kld, recon, kld
 
 
+def loss_function_2d(x, x_hat, mu, log_var, error_per_feature=True, kld_weight=1.0):
+    # if selected error per feature, we are averaging everything
+    if error_per_feature:
+        # recon: mean mse loss
+        recon = F.mse_loss(x_hat, x, reduction="mean")
+
+        # KL: mean over batch, then mean over latent dims
+        kld = -0.5 * (1 + log_var - mu.pow(2) - log_var.exp())
+        kld = kld.flatten(1).sum(dim=1).mean() / log_var.size(1)
+
+    # if selected error per sample, we are summing everything
+    else:
+        # recon: sum over features per sample, then mean over batch
+        recon = F.mse_loss(x_hat, x, reduction="none")  # [B, D]
+        recon = recon.sum(dim=1).mean()
+
+        # kld: sum over latent dims per sample, then mean over batch
+        kld = -0.5 * (1 + log_var - mu.pow(2) - log_var.exp())
+        kld = kld.flatten(1).sum(dim=1).mean() / log_var.size(1)
+
+    return recon + kld_weight * kld, recon, kld
+
+
+
 def train_vae_basic(
     model,
     train_loader,
@@ -39,6 +63,12 @@ def train_vae_basic(
     kld_weight=1.0,
     name='basicVAE_general',
 ):
+    device = torch.device(device)
+    model = model.to(device)
+
+    # select loss function based on whether the data is flattened or not
+    loss_fn = loss_function if len(train_loader.dataset.data.shape) == 1 else loss_function_2d
+
     history = {
         'train_loss': [],
         'train_reproduction_loss': [],
@@ -66,9 +96,9 @@ def train_vae_basic(
             x = data.to(device)
 
             optimizer.zero_grad()
-            
-            recon_x, mu, logvar, z = model(x)
-            loss, recon, kld = loss_function(x, recon_x, mu, logvar, loss_per_feature, kld_weight)
+
+            recon_x, mu, logvar = model(x)
+            loss, recon, kld = loss_fn(x, recon_x, mu, logvar, loss_per_feature, kld_weight)
             train_loss += loss.item()
             train_reproduction_loss += recon.item()
             train_KLD += kld.item()
@@ -89,8 +119,9 @@ def train_vae_basic(
             val_KLD = 0.0
             for batch_idx, (data, _) in enumerate(val_loader):
                 x = data.to(device)
-                recon_x, mu, logvar, z = model(x)
-                loss, recon, kld = loss_function(x, recon_x, mu, logvar, loss_per_feature, kld_weight)
+                model_out = model(x)
+                recon_x, mu, logvar = model_out[:3]
+                loss, recon, kld = loss_fn(x, recon_x, mu, logvar, loss_per_feature, kld_weight)
                 val_loss += loss.item()
                 val_reproduction_loss += recon.item()
                 val_KLD += kld.item()

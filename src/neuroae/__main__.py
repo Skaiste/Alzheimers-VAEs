@@ -125,13 +125,16 @@ def main():
     print(f"\nPreparing PyTorch DataLoaders...")
     loaders = prepare_data_loaders(
         data_loader,
-        batch_size=int(data_config['data']['batch_size']),
-        flatten=data_config['data']['flatten'],
-        normalize=data_config['data']['normalize'],
-        train_split=float(data_config['data']['train_split']),
-        val_split=float(data_config['data']['val_split']),
-        random_seed=int(data_config['data']['random_seed']),
-        train_groups=data_config['data']['groups'], # will use the same for val and test
+        batch_size=int(data_config['data'].get('batch_size', 16)),
+        transpose=data_config['data'].get('transpose', False),
+        flatten=data_config['data'].get('flatten', False),
+        normalize=data_config['data'].get('normalize', False),
+        pad_features=data_config['data'].get('pad_features', False),
+        truncate_features=data_config['data'].get('truncate_features', False),
+        train_split=float(data_config['data'].get('train_split', 0.7)),
+        val_split=float(data_config['data'].get('val_split', 0.15)),
+        random_seed=int(data_config['data'].get('random_seed', 42)),
+        train_groups=data_config['data'].get('groups', ["HC","MCI","AD"]), # will use the same for val and test
     )
     
     print(f"\nDataLoader information:")
@@ -162,21 +165,39 @@ def main():
         print("Training mode")
         print("=" * 60)
 
-        from .models import BasicVAE
-        from .train import train_vae_basic, plot_training_history
+        from .train import train_vae_basic
+
+        input_dim = loaders['input_dim']
 
         model_config = load_config(args.model_config)
         model_name = model_config['model']['name']
-        input_dim = loaders['input_dim']
-        hidden_dims = model_config['model'].get('hidden_dims', [1024, 512, 256, 128])
-        latent_dim = model_config['model'].get('latent_dim', 32)
         if model_name == "BasicVAE":
+            from .models import BasicVAE
+            hidden_dims = model_config['model'].get('hidden_dims', [1024, 512, 256, 128])
+            latent_dim = model_config['model'].get('latent_dim', 32)
             model = BasicVAE(input_dim=input_dim, hidden_dims=hidden_dims, latent_dim=latent_dim, device=args.device)
+        elif model_name == "AutoencoderKL":
+            from monai.networks.nets.autoencoderkl import AutoencoderKL
+            model = AutoencoderKL(
+                spatial_dims=1,
+                in_channels=input_dim[0],
+                out_channels=input_dim[0],
+                num_res_blocks=1,
+                channels=(64, 128, 256),
+                attention_levels=(False, False, False),
+                latent_channels=8,
+                norm_num_groups=32,
+                norm_eps=1e-6,
+                with_encoder_nonlocal_attn=False,
+                with_decoder_nonlocal_attn=False,
+            )
         else:
             raise ValueError(f"Model name {model_name} not supported")
 
+        device = torch.device(args.device)
+
         if "load_path" in model_config['model']:
-            model.load_state_dict(torch.load(model_config['model']['load_path']))
+            model.load_state_dict(torch.load(model_config['model']['load_path'], map_location=device))
             print(f"Model loaded from {model_config['model']['load_path']}")
             if model_config['model']['freeze_encoder']:
                 model.freeze_encoder()
@@ -184,6 +205,7 @@ def main():
                 model.reset_decoder()
         else:
             print("No model load path provided, training from scratch")
+        model = model.to(device)
 
         training_config = load_config(args.training_config)
         tracker = TrainingResultsManager(results_dir=project_path / "results")
@@ -251,7 +273,9 @@ def main():
         training_config = load_config(args.training_config)
         model_name = training_config['training']['name'] + "_model.pt"
         model_path = pathlib.Path(training_config['training']['save_dir']) / model_name
-        model.load_state_dict(torch.load(model_path))
+        device = torch.device(args.device)
+        model.load_state_dict(torch.load(model_path, map_location=device))
+        model = model.to(device)
         result_dir = args.data_dir / "results"
         result_dir.mkdir(parents=True, exist_ok=True)
         inference_vae_basic(

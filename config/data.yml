@@ -1,19 +1,25 @@
 data:
   batch_size: 16
-  flatten: true
+  flatten: false
+  groups:
+  - HC
+  - MCI
+  - AD
   normalize: true
-  train_split: 0.7
-  val_split: 0.15
   random_seed: 42
-  groups: [HC,MCI,AD]
+  train_split: 0.7
+  transpose: false
+  val_split: 0.15
+  pad_features: true
+  truncate_features: false
 
 filter:
-  type: BandPassFilter
-  tr: 3000
-  flp: 0.01
-  fhi: 0.08
-  k: 2
-  remove_artifacts: true
   apply_demean: true
   apply_detrend: true
   apply_finalDetrend: false
+  fhi: 0.08
+  flp: 0.01
+  k: 2
+  remove_artifacts: true
+  tr: 3000
+  type: BandPassFilter

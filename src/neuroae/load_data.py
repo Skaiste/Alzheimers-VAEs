@@ -259,7 +259,7 @@ class ADNIDataset(Dataset):
     Each sample is a flattened timeseries (N_ROIs * T_timepoints).
     """
     
-    def __init__(self, timeseries_data, labels=None, flatten=True, normaliser=None):
+    def __init__(self, timeseries_data, labels=None, transpose=False, flatten=True, normaliser=None, pad_features=False, truncate_features=False):
         """
         Initialize ADNI Dataset.
         
@@ -274,13 +274,21 @@ class ADNIDataset(Dataset):
             data_max: Maximum value for normalization (if None, computed from data)
         """
         self.flatten = flatten
+        self.transpose = transpose
         self.normaliser = normaliser
+        self.pad_features = pad_features
+        self.truncate_features = truncate_features
         self.original_shape = None
+
+        assert not (self.truncate_features and self.pad_features), 'Can only pad or truncate features not both'
         
         # Convert to numpy arrays and store
         self.data = []
         for ts in timeseries_data:
             ts_array = np.array(ts)
+            if transpose:
+                ts_array = ts_array.T
+
             self.original_shape = ts_array.shape
             
             if flatten:
@@ -295,13 +303,32 @@ class ADNIDataset(Dataset):
             self.data.append(ts_array)
         
         self.data = np.array(self.data)
-        
+
         if normaliser is not None:
+            if not flatten:
+                # shape it for normaliser
+                N, P, T = self.data.shape
+                data_reshaped = self.data.transpose(0, 2, 1)
+                data_flat = data_reshaped.reshape(-1, P)
+                self.data = data_flat
             # assuming the normaliser will first be applied to training data, 
             # therefore it can be fit on the first usage of the normaliser
             if not hasattr(normaliser, 'mean_'):
                 normaliser.fit(self.data)
             self.data = normaliser.transform(self.data)
+
+            if not flatten:
+                # reshape back
+                data_scaled = self.data.reshape(N, T, P)
+                self.data = data_scaled.transpose(0, 2, 1)
+
+        if pad_features:
+            pad_by = 4 - self.data.shape[-1]%4
+            self.data = np.pad(self.data, [(0,0),(0,0),(0,pad_by)], mode='constant', constant_values=0)
+
+        if truncate_features:
+            ft_size = self.data.shape[-1] - self.data.shape[-1]%4
+            self.data = self.data[:,:,:ft_size]
 
         self.labels = labels if labels is not None else [None] * len(self.data)
         
@@ -390,7 +417,10 @@ def prepare_data_loaders(
     test_groups=None,
     batch_size=32,
     shuffle_train=True,
+    transpose=False,
     flatten=True,
+    pad_features=False,
+    truncate_features=False,
     train_split=0.7,
     val_split=0.15,
     random_seed=42,
@@ -426,13 +456,6 @@ def prepare_data_loaders(
     all_timeseries, all_subject_ids, all_labels = extract_timeseries_from_loader(
         data_loader, groups=train_groups
     )
-    
-    # Determine input dimension
-    sample_shape = all_timeseries[0].shape
-    if flatten:
-        input_dim = np.prod(sample_shape)
-    else:
-        input_dim = sample_shape
     
     # Split data if val/test groups not specified
     if val_groups is None and test_groups is None:
@@ -474,40 +497,37 @@ def prepare_data_loaders(
             test_data, test_ids, test_labels = extract_timeseries_from_loader(
                 data_loader, groups=test_groups
             )
-    
-    # Compute normalization statistics from training data
-    # Convert training data to numpy array to compute min/max
-    train_data_array = []
-    for ts in train_data:
-        ts_array = np.array(ts)
-        if flatten:
-            ts_array = ts_array.flatten()
-        train_data_array.append(ts_array)
-    train_data_array = np.array(train_data_array)
-    data_mean = train_data_array.mean()
-    data_std = train_data_array.std()
 
     normaliser = StandardScaler() if normalize else None
     
     # Create PyTorch datasets with normalization
-    train_dataset = ADNIDataset(train_data, train_labels, flatten=flatten, normaliser=normaliser)
+    train_dataset = ADNIDataset(
+        train_data, train_labels, 
+        transpose=transpose, flatten=flatten, 
+        normaliser=normaliser, pad_features=pad_features,
+        truncate_features=truncate_features
+    )
     print("Training dataset")
     train_dataset.describe()
 
     train_loader = DataLoader(
         train_dataset, batch_size=batch_size, shuffle=shuffle_train
     )
+
+    input_dim = train_dataset.data[0].shape
     
     result = {
         'train_loader': train_loader,
         'input_dim': input_dim,
         'num_samples': {'train': len(train_dataset)},
-        'data_mean': data_mean,
-        'data_std': data_std
     }
     
     if val_data:
-        val_dataset = ADNIDataset(val_data, val_labels, flatten=flatten, normaliser=normaliser)
+        val_dataset = ADNIDataset(val_data, val_labels,
+            transpose=transpose, flatten=flatten, 
+            normaliser=normaliser, pad_features=pad_features,
+            truncate_features=truncate_features
+        )
         val_loader = DataLoader(
             val_dataset, batch_size=batch_size, shuffle=False
         )
@@ -515,7 +535,11 @@ def prepare_data_loaders(
         result['num_samples']['val'] = len(val_dataset)
     
     if test_data:
-        test_dataset = ADNIDataset(test_data, test_labels, flatten=flatten, normaliser=normaliser)
+        test_dataset = ADNIDataset(test_data, test_labels,
+            transpose=transpose, flatten=flatten, 
+            normaliser=normaliser, pad_features=pad_features,
+            truncate_features=truncate_features
+        )
         test_loader = DataLoader(
             test_dataset, batch_size=batch_size, shuffle=False
         )

@@ -1,7 +1,6 @@
 training:
-  num_epochs: 40
+  kld_weight: 1
   learning_rate: 1e-4
   loss_per_feature: true
-  kld_weight: 1
+  num_epochs: 40
   save_dir: ./models
-  name: basicVAE_general
