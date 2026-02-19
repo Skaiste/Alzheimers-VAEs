@@ -7,6 +7,7 @@ interface for use in main.py and other scripts.
 """
 
 import sys
+import csv
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -420,6 +421,65 @@ def extract_timeseries_from_loader(data_loader, groups=None):
     return timeseries_list, subject_ids, labels
 
 
+def _resolve_split_path(split_path):
+    if split_path is None:
+        return None
+    split_path = Path(split_path)
+    if split_path.is_absolute():
+        return split_path
+    project_root = Path(__file__).resolve().parents[2]
+    return project_root / split_path
+
+
+def _load_split_assignments(split_path):
+    id_column = "subject_id"
+    label_column = "label"
+    split_column = "split"
+    assignments = {}
+    with split_path.open("r", newline="") as csv_file:
+        reader = csv.DictReader(csv_file)
+        required_columns = {id_column, label_column, split_column}
+        missing_columns = required_columns.difference(reader.fieldnames or [])
+        if missing_columns:
+            raise ValueError(
+                f"Split file {split_path} is missing required columns: {sorted(missing_columns)}"
+            )
+
+        for row in reader:
+            subject_id = str(row[id_column]).strip()
+            split_name = str(row[split_column]).strip().lower()
+            if split_name not in {"train", "val", "test"}:
+                raise ValueError(
+                    f"Invalid split '{split_name}' for subject '{subject_id}' in {split_path}."
+                )
+            assignments[subject_id] = {
+                "split": split_name,
+                "label": str(row[label_column]).strip(),
+            }
+    return assignments
+
+
+def _save_split_assignments(split_path, rows):
+    id_column = "subject_id"
+    label_column = "label"
+    split_column = "split"
+    split_path.parent.mkdir(parents=True, exist_ok=True)
+    with split_path.open("w", newline="") as csv_file:
+        writer = csv.DictWriter(
+            csv_file,
+            fieldnames=[id_column, label_column, split_column],
+        )
+        writer.writeheader()
+        for subject_id, label, split_name in sorted(rows, key=lambda row: (row[2], row[0])):
+            writer.writerow(
+                {
+                    id_column: subject_id,
+                    label_column: label,
+                    split_column: split_name,
+                }
+            )
+
+
 def prepare_data_loaders(
     data_loader,
     train_groups=None,
@@ -436,6 +496,8 @@ def prepare_data_loaders(
     random_seed=42,
     normalize=True,
     timepoints_as_samples=False,
+    split_mode="none",
+    export_datasplit=None,
 ):
     """
     Prepare PyTorch DataLoaders from ADNI DataLoader.
@@ -470,26 +532,94 @@ def prepare_data_loaders(
     
     # Split data if val/test groups not specified
     if val_groups is None and test_groups is None:
-        # Random split
-        np.random.seed(random_seed)
-        indices = np.random.permutation(len(all_timeseries))
-        
-        n_train = int(len(all_timeseries) * train_split)
-        n_val = int(len(all_timeseries) * val_split)
-        
-        train_indices = indices[:n_train]
-        val_indices = indices[n_train:n_train + n_val]
-        test_indices = indices[n_train + n_val:]
-        
-        train_data = [all_timeseries[i] for i in train_indices]
-        train_labels = [all_labels[i] for i in train_indices]
-        
-        val_data = [all_timeseries[i] for i in val_indices]
-        val_labels = [all_labels[i] for i in val_indices]
-        
-        test_data = [all_timeseries[i] for i in test_indices]
-        test_labels = [all_labels[i] for i in test_indices]
+        split_mode = (split_mode or "none").lower()
+        supported_split_modes = {"none", "load", "create"}
+        if split_mode not in supported_split_modes:
+            raise ValueError(
+                f"Unsupported split_mode '{split_mode}'. Expected one of {sorted(supported_split_modes)}"
+            )
+
+        split_path = _resolve_split_path(export_datasplit) if export_datasplit else None
+        if split_mode in {"load", "create"} and split_path is None:
+            raise ValueError(
+                "split_mode requires 'export_datasplit' to be set when not using none mode."
+            )
+
+        train_data, train_labels = [], []
+        val_data, val_labels = [], []
+        test_data, test_labels = [], []
+
+        split_loaded = False
+        if split_mode == "load" and split_path.exists():
+            split_assignments = _load_split_assignments(
+                split_path,
+            )
+            seen_subjects = set()
+            for timeseries, subject_id, label in zip(all_timeseries, all_subject_ids, all_labels):
+                assignment = split_assignments.get(subject_id)
+                if assignment is None:
+                    raise ValueError(
+                        f"Subject '{subject_id}' was not found in split file {split_path}."
+                    )
+                split_name = assignment["split"]
+                seen_subjects.add(subject_id)
+                if split_name == "train":
+                    train_data.append(timeseries)
+                    train_labels.append(label)
+                elif split_name == "val":
+                    val_data.append(timeseries)
+                    val_labels.append(label)
+                else:
+                    test_data.append(timeseries)
+                    test_labels.append(label)
+
+            missing_subjects = set(split_assignments.keys()).difference(seen_subjects)
+            if missing_subjects:
+                print(
+                    f"Warning: {len(missing_subjects)} subjects in {split_path} were not found in the loaded dataset."
+                )
+            print(f"Loaded data split from {split_path}")
+            split_loaded = True
+        elif split_mode == "load":
+            raise FileNotFoundError(f"split_mode=load, but split file does not exist: {split_path}")
+
+        if not split_loaded:
+            np.random.seed(random_seed)
+            indices = np.random.permutation(len(all_timeseries))
+
+            n_train = int(len(all_timeseries) * train_split)
+            n_val = int(len(all_timeseries) * val_split)
+
+            train_indices = indices[:n_train]
+            val_indices = indices[n_train:n_train + n_val]
+            test_indices = indices[n_train + n_val:]
+
+            train_data = [all_timeseries[i] for i in train_indices]
+            train_labels = [all_labels[i] for i in train_indices]
+
+            val_data = [all_timeseries[i] for i in val_indices]
+            val_labels = [all_labels[i] for i in val_indices]
+
+            test_data = [all_timeseries[i] for i in test_indices]
+            test_labels = [all_labels[i] for i in test_indices]
+
+            if split_mode == "create":
+                split_rows = []
+                for i in train_indices:
+                    split_rows.append((all_subject_ids[i], all_labels[i], "train"))
+                for i in val_indices:
+                    split_rows.append((all_subject_ids[i], all_labels[i], "val"))
+                for i in test_indices:
+                    split_rows.append((all_subject_ids[i], all_labels[i], "test"))
+
+                _save_split_assignments(
+                    split_path,
+                    split_rows,
+                )
+                print(f"Saved data split to {split_path}")
     else:
+        if split_mode and (split_mode.lower() != "none"):
+            print("Ignoring split_mode/export_datasplit because val_groups/test_groups were explicitly provided.")
         # Use specified groups
         train_data, train_ids, train_labels = extract_timeseries_from_loader(
             data_loader, groups=train_groups

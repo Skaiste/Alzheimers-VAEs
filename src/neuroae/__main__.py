@@ -131,6 +131,8 @@ def main():
     
     # Prepare PyTorch DataLoaders
     print(f"\nPreparing PyTorch DataLoaders...")
+    split_mode = data_config['data'].get('datasplit_mode', 'none')
+    export_datasplit = data_config['data'].get('datasplit_file')
     loaders = prepare_data_loaders(
         data_loader,
         batch_size=int(data_config['data'].get('batch_size', 16)),
@@ -143,7 +145,9 @@ def main():
         val_split=float(data_config['data'].get('val_split', 0.15)),
         random_seed=int(data_config['data'].get('random_seed', 42)),
         train_groups=data_config['data'].get('groups', ["HC","MCI","AD"]), # will use the same for val and test
-        timepoints_as_samples=data_config['data'].get('timepoints_as_samples', False)
+        timepoints_as_samples=data_config['data'].get('timepoints_as_samples', False),
+        split_mode=split_mode,
+        export_datasplit=export_datasplit
     )
     
     print(f"\nDataLoader information:")
