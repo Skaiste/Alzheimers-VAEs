@@ -24,8 +24,16 @@ def load_config(config_path):
 
 
 def _build_training_summary(history):
-    val_losses = history.get('val_loss', [])
-    train_losses = history.get('train_loss', [])
+    def _metric_values(split, metric):
+        split_metrics = history.get(split)
+        if isinstance(split_metrics, dict):
+            values = split_metrics.get(metric, [])
+            return values if isinstance(values, list) else []
+        values = history.get(f"{split}_{metric}", [])
+        return values if isinstance(values, list) else []
+
+    val_losses = _metric_values("val", "loss")
+    train_losses = _metric_values("train", "loss")
     best_epoch = None
     best_val = None
     if val_losses:
@@ -34,7 +42,7 @@ def _build_training_summary(history):
         best_val = float(val_losses[best_index])
 
     return {
-        'num_epochs': len(train_losses),
+        'num_epochs': max(len(train_losses), len(val_losses)),
         'best_epoch': best_epoch,
         'best_val_loss': best_val,
         'final_train_loss': float(train_losses[-1]) if train_losses else None,
@@ -191,6 +199,13 @@ def main():
                 with_encoder_nonlocal_attn=False,
                 with_decoder_nonlocal_attn=False,
             )
+        elif model_name == "Pinaya2018":
+            from .models import Pinaya2018AE
+            model = Pinaya2018AE(
+                input_dim=input_dim[0],
+                hidden_dims=[int(i) for i in model_config['model'].get('hidden_dims', [1024, 256])],
+                latent_dim=int(model_config['model'].get('latent_dim', 32))
+            )
         else:
             raise ValueError(f"Model name {model_name} not supported")
 
@@ -224,16 +239,15 @@ def main():
             loaders['val_loader'],
             num_epochs=int(training_config['training']['num_epochs']),
             learning_rate=float(training_config['training']['learning_rate']),
-            loss_per_feature=training_config['training']['loss_per_feature'],
-            kld_weight=float(training_config['training']['kld_weight']),
             device=args.device,
             save_dir=training_config['training']['save_dir'],
             name=experiment_id,
-            loss_fn_name=training_config['training'].get('loss_function', "recon_kld_loss")
+            loss_fn_name=training_config['training'].get('loss_function', "recon_kld_loss"),
+            loss_fn_params=training_config['training'].get('loss_params', {})
         )
         # os.makedirs('plots', exist_ok=True)
         # plot_training_history(history, save_path=f'plots/{experiment_id}_training_history.png', show=False)
-        print(f'Training history saved to plots/{experiment_id}_training_history.png')
+        # print(f'Training history saved to plots/{experiment_id}_training_history.png')
 
         model_artifact = pathlib.Path(training_config['training']['save_dir']) / f"{experiment_id}_model.pt"
         experiment_metadata = {

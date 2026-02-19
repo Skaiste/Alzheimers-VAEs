@@ -1,17 +1,15 @@
 data:
   batch_size: 16
-  flatten: false
-  groups:
-  - HC
-  - MCI
-  - AD
+  flatten: true
+  groups: [HC, MCI, AD]
   normalize: true
   random_seed: 42
   train_split: 0.7
   transpose: false
   val_split: 0.15
-  pad_features: true
+  pad_features: false
   truncate_features: false
+  timepoints_as_samples: true
 
 filter:
   apply_demean: true

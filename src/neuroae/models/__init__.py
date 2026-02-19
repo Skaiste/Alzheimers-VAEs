@@ -1,3 +1,2 @@
 from .basic import BasicVAE
-
-__all__ = ['BasicVAE']
+from .pinaya2018 import Pinaya2018AE

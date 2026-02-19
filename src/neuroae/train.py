@@ -2,14 +2,14 @@ import torch
 import torch.optim as optim
 import matplotlib.pyplot as plt
 
-from .loss import get_loss_function
+from .loss import LossFunction
 
-def loss_params2str(train_params, val_params):
-    def _format_loss_dict(params, type):
-        return " | ".join(f"{type} {k}: {float(v):.3f}" for k, v in params.items())
+def loss_params2str(train_params, train_batches, val_params, val_batches):
+    def _format_loss_dict(params, type, batches):
+        return " | ".join(f"{type} {k}: {float(v/batches):.3f}" for k, v in params.items())
 
-    train_pstr = _format_loss_dict(train_params, "Train")
-    val_pstr = _format_loss_dict(val_params, "Val")
+    train_pstr = _format_loss_dict(train_params, "Train", train_batches)
+    val_pstr = _format_loss_dict(val_params, "Val", val_batches)
     return f"{train_pstr} | {val_pstr}"
 
 def train_vae_basic(
@@ -18,17 +18,16 @@ def train_vae_basic(
     val_loader,
     num_epochs=100,
     learning_rate=1e-4,
-    loss_per_feature=True,
     device='cuda' if torch.cuda.is_available() else 'cpu',
     save_dir='./checkpoints',
-    kld_weight=1.0,
     name='basicVAE_general',
-    loss_fn_name="recon_kld"
+    loss_fn_name="recon_kld",
+    loss_fn_params={}
 ):
     device = torch.device(device)
     model = model.to(device)
 
-    loss_fn = get_loss_function(loss_fn_name)
+    loss_fn = LossFunction(loss_fn_name, loss_fn_params)
 
     history = {
         'train': {},
@@ -46,7 +45,7 @@ def train_vae_basic(
             optimizer.zero_grad()
 
             output = model(x)
-            loss = loss_fn(x, output, loss_per_feature, kld_weight)
+            loss = loss_fn.run(x, output)
             for p in loss:
                 if p not in train_loss_params:
                     train_loss_params[p] = 0
@@ -69,7 +68,7 @@ def train_vae_basic(
             for batch_idx, (data, _) in enumerate(val_loader):
                 x = data.to(device)
                 output = model(x)
-                loss = loss_fn(x, output, loss_per_feature, kld_weight)
+                loss = loss_fn.run(x, output)
 
                 for p in loss:
                     if p not in val_loss_params:
@@ -83,7 +82,7 @@ def train_vae_basic(
                 history['val'][p] = []
             history['val'][p].append(val_loss_params[p] / num_val_batches)
 
-        print(f"Epoch {epoch}/{num_epochs} | {loss_params2str(train_loss_params, val_loss_params)}")
+        print(f"Epoch {epoch}/{num_epochs} | {loss_params2str(train_loss_params, num_batches, val_loss_params, num_val_batches)}")
 
         # select best model based on validation loss
         avg_val_loss = val_loss_params['loss'] / num_val_batches

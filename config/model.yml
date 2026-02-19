@@ -1,4 +1,6 @@
 model:
   freeze_encoder: false
-  name: AutoencoderKL
   reset_decoder: false
+  name: Pinaya2018
+  hidden_dims: [512, 128]
+  latent_dim: 32
