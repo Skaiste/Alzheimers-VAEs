@@ -4,3 +4,4 @@ training:
   loss_per_feature: true
   num_epochs: 40
   save_dir: ./models
+  loss_function: recon_kld_loss_2d

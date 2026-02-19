@@ -229,6 +229,7 @@ def main():
             device=args.device,
             save_dir=training_config['training']['save_dir'],
             name=experiment_id,
+            loss_fn_name=training_config['training'].get('loss_function', "recon_kld_loss")
         )
         # os.makedirs('plots', exist_ok=True)
         # plot_training_history(history, save_path=f'plots/{experiment_id}_training_history.png', show=False)
@@ -243,7 +244,6 @@ def main():
             'model_params': deepcopy(model_config.get('model', {})),
             'training_params': deepcopy(training_config.get('training', {})),
             'data_params': deepcopy(data_config),
-            'tags': [training_config['training']['name']],
             'artifacts': {
                 'model_path': str(model_artifact),
             },

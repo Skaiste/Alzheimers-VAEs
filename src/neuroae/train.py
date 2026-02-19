@@ -1,55 +1,16 @@
 import torch
 import torch.optim as optim
-import torch.nn.functional as F
 import matplotlib.pyplot as plt
 
+from .loss import get_loss_function
 
-def loss_function(x, x_hat, mu, log_var, error_per_feature=True, kld_weight=1.0):
-    # if selected error per feature, we are averaging everything
-    if error_per_feature:
-        # recon: mean mse loss
-        recon = F.mse_loss(x_hat, x, reduction="mean")
+def loss_params2str(train_params, val_params):
+    def _format_loss_dict(params, type):
+        return " | ".join(f"{type} {k}: {float(v):.3f}" for k, v in params.items())
 
-        # KL: mean over batch, then mean over latent dims
-        kld = -0.5 * (1 + log_var - mu.pow(2) - log_var.exp())
-        kld = kld.sum(dim=1).mean() / log_var.size(1)
-
-    # if selected error per sample, we are summing everything
-    else:
-        # recon: sum over features per sample, then mean over batch
-        recon = F.mse_loss(x_hat, x, reduction="none")  # [B, D]
-        recon = recon.sum(dim=1).mean()
-
-        # kld: sum over latent dims per sample, then mean over batch
-        kld = -0.5 * (1 + log_var - mu.pow(2) - log_var.exp())
-        kld = kld.sum(dim=1).mean() / log_var.size(1)
-
-    return recon + kld_weight * kld, recon, kld
-
-
-def loss_function_2d(x, x_hat, mu, log_var, error_per_feature=True, kld_weight=1.0):
-    # if selected error per feature, we are averaging everything
-    if error_per_feature:
-        # recon: mean mse loss
-        recon = F.mse_loss(x_hat, x, reduction="mean")
-
-        # KL: mean over batch, then mean over latent dims
-        kld = -0.5 * (1 + log_var - mu.pow(2) - log_var.exp())
-        kld = kld.flatten(1).sum(dim=1).mean() / log_var.size(1)
-
-    # if selected error per sample, we are summing everything
-    else:
-        # recon: sum over features per sample, then mean over batch
-        recon = F.mse_loss(x_hat, x, reduction="none")  # [B, D]
-        recon = recon.sum(dim=1).mean()
-
-        # kld: sum over latent dims per sample, then mean over batch
-        kld = -0.5 * (1 + log_var - mu.pow(2) - log_var.exp())
-        kld = kld.flatten(1).sum(dim=1).mean() / log_var.size(1)
-
-    return recon + kld_weight * kld, recon, kld
-
-
+    train_pstr = _format_loss_dict(train_params, "Train")
+    val_pstr = _format_loss_dict(val_params, "Val")
+    return f"{train_pstr} | {val_pstr}"
 
 def train_vae_basic(
     model,
@@ -62,34 +23,21 @@ def train_vae_basic(
     save_dir='./checkpoints',
     kld_weight=1.0,
     name='basicVAE_general',
+    loss_fn_name="recon_kld"
 ):
     device = torch.device(device)
     model = model.to(device)
 
-    # select loss function based on whether the data is flattened or not
-    loss_fn = loss_function if len(train_loader.dataset.data.shape) == 1 else loss_function_2d
+    loss_fn = get_loss_function(loss_fn_name)
 
     history = {
-        'train_loss': [],
-        'train_reproduction_loss': [],
-        'train_KLD': [],
-        'val_loss': [],
-        'val_reproduction_loss': [],
-        'val_KLD': [],
+        'train': {},
+        'val': {}
     }
-    best_model_losses = {
-        'train_loss': float('inf'),
-        'train_reproduction_loss': float('inf'),
-        'train_KLD': float('inf'),
-        'val_loss': float('inf'),
-        'val_reproduction_loss': float('inf'),
-        'val_KLD': float('inf'),
-    }
+    best_model_losses = None
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     for epoch in range(num_epochs):
-        train_loss = 0.0
-        train_reproduction_loss = 0.0
-        train_KLD = 0.0
+        train_loss_params = {}
 
         model.train()
         for batch_idx, (data, _) in enumerate(train_loader):
@@ -97,95 +45,54 @@ def train_vae_basic(
 
             optimizer.zero_grad()
 
-            recon_x, mu, logvar = model(x)
-            loss, recon, kld = loss_fn(x, recon_x, mu, logvar, loss_per_feature, kld_weight)
-            train_loss += loss.item()
-            train_reproduction_loss += recon.item()
-            train_KLD += kld.item()
+            output = model(x)
+            loss = loss_fn(x, output, loss_per_feature, kld_weight)
+            for p in loss:
+                if p not in train_loss_params:
+                    train_loss_params[p] = 0
+                train_loss_params[p] += loss[p]
 
-            loss.backward()
+            loss['loss'].backward()
             optimizer.step()
 
         num_batches = batch_idx + 1
-        history['train_loss'].append(train_loss / num_batches)
-        history['train_reproduction_loss'].append(train_reproduction_loss / num_batches)
-        history['train_KLD'].append(train_KLD / num_batches)
+        for p in train_loss_params:
+            train_loss_params[p] = float(train_loss_params[p].detach())
+            if p not in history['train']:
+                history['train'][p] = []
+            history['train'][p].append(train_loss_params[p] / num_batches)
 
         # validation
         model.eval()
         with torch.no_grad():
-            val_loss = 0.0
-            val_reproduction_loss = 0.0
-            val_KLD = 0.0
+            val_loss_params = {}
             for batch_idx, (data, _) in enumerate(val_loader):
                 x = data.to(device)
-                model_out = model(x)
-                recon_x, mu, logvar = model_out[:3]
-                loss, recon, kld = loss_fn(x, recon_x, mu, logvar, loss_per_feature, kld_weight)
-                val_loss += loss.item()
-                val_reproduction_loss += recon.item()
-                val_KLD += kld.item()
+                output = model(x)
+                loss = loss_fn(x, output, loss_per_feature, kld_weight)
+
+                for p in loss:
+                    if p not in val_loss_params:
+                        val_loss_params[p] = 0
+                    val_loss_params[p] += loss[p]
 
         num_val_batches = batch_idx + 1
-        history['val_loss'].append(val_loss / num_val_batches)
-        history['val_reproduction_loss'].append(val_reproduction_loss / num_val_batches)
-        history['val_KLD'].append(val_KLD / num_val_batches)
+        for p in val_loss_params:
+            val_loss_params[p] = float(val_loss_params[p].detach())
+            if p not in history['val']:
+                history['val'][p] = []
+            history['val'][p].append(val_loss_params[p] / num_val_batches)
 
-        print(f"Epoch {epoch}/{num_epochs} | Train Loss: {train_loss / num_batches:.4f} | Train Recon: {train_reproduction_loss / num_batches:.4f} | Train KLD: {train_KLD / num_batches:.4f} | Val Loss: {val_loss / num_val_batches:.4f} | Val Recon: {val_reproduction_loss / num_val_batches:.4f} | Val KLD: {val_KLD / num_val_batches:.4f}")
+        print(f"Epoch {epoch}/{num_epochs} | {loss_params2str(train_loss_params, val_loss_params)}")
 
         # select best model based on validation loss
-        avg_val_loss = val_loss / num_val_batches
-        if avg_val_loss < best_model_losses['val_loss']:
-            best_model_losses['val_loss'] = avg_val_loss
-            best_model_losses['val_reproduction_loss'] = val_reproduction_loss / num_val_batches
-            best_model_losses['val_KLD'] = val_KLD / num_val_batches
-            best_model_losses['train_loss'] = train_loss / num_batches
-            best_model_losses['train_reproduction_loss'] = train_reproduction_loss / num_batches
-            best_model_losses['train_KLD'] = train_KLD / num_batches
+        avg_val_loss = val_loss_params['loss'] / num_val_batches
+        if best_model_losses is None or avg_val_loss < best_model_losses['val']['loss']:
+            best_model_losses = {
+                "train": {p:train_loss_params[p] / num_batches for p in train_loss_params},
+                "val": {p:val_loss_params[p] / num_val_batches for p in val_loss_params}
+            }
             torch.save(model.state_dict(), f'{save_dir}/{name}_model.pt')
             
     print("Training complete!")
     return history
-
-
-def plot_training_history(
-    history,
-    figsize=(12, 4),
-    save_path=None,
-    show=True,
-):
-    """Plot training history from train_vae_basic.
-
-    Args:
-        history: Dict with keys train_loss, train_reproduction_loss, train_KLD,
-            val_loss, val_reproduction_loss, val_KLD (each a list of per-epoch values).
-        figsize: Figure size (width, height).
-        save_path: Optional path to save the figure.
-        show: Whether to display the plot (default True).
-    """
-    fig, axes = plt.subplots(1, 3, figsize=figsize)
-
-    metrics = [
-        ('loss', 'Total Loss'),
-        ('reproduction_loss', 'Reconstruction Loss'),
-        ('KLD', 'KL Divergence'),
-    ]
-    epochs = range(1, len(history['train_loss']) + 1)
-
-    for ax, (suffix, title) in zip(axes, metrics):
-        train_key = f'train_{suffix}'
-        val_key = f'val_{suffix}'
-        ax.plot(epochs, history[train_key], label='Train', color='tab:blue')
-        ax.plot(epochs, history[val_key], label='Validation', color='tab:orange')
-        ax.set_xlabel('Epoch')
-        ax.set_ylabel(title)
-        ax.set_title(title)
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-
-    plt.tight_layout()
-    if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches='tight')
-    if show:
-        plt.show()
-    return fig
