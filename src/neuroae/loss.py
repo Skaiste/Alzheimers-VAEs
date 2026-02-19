@@ -11,7 +11,7 @@ class LossFunction:
         if loss_name not in self.lfn_index:
             raise ValueError(f"The loss function {loss_name} does not exist")
         self.loss_name = loss_name
-        self.loss_params = loss_params
+        self.loss_params = {k:v for p in loss_params for k,v in p.items()}
 
         if self.loss_name == "mse_loss":
             self.criterion = nn.MSELoss()
@@ -79,5 +79,4 @@ class LossFunction:
         }
 
     def mse_loss(self, x, output):
-        x_hat, z = output
-        return {'loss': self.criterion(x_hat, x)}
+        return {'loss': self.criterion(output[0], x)}

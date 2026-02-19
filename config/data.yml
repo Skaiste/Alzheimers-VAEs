@@ -1,6 +1,6 @@
 data:
   batch_size: 16
-  flatten: true
+  flatten: false
   groups: [HC, MCI, AD]
   normalize: true
   random_seed: 42

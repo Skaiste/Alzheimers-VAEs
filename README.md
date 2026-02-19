@@ -33,6 +33,7 @@ uv run neuroae
 - [ ] Evaluation framework
 
 #### Todo's:
+- write a data split configuration file, that would select which subjects should go into which dataset, and add an ability to load this configuration
 - keep reading papers and start looking into other types of autoencoders to implement
 - experiment with using timepoints as separate entries, that way increasing the volume of data, but remember to split the data into datasets first, then expand entries, i.e. do it in the dataset class
 - write a hyperparameter search script to find best training parameters for each architecture

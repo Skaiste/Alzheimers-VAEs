@@ -143,6 +143,7 @@ def main():
         val_split=float(data_config['data'].get('val_split', 0.15)),
         random_seed=int(data_config['data'].get('random_seed', 42)),
         train_groups=data_config['data'].get('groups', ["HC","MCI","AD"]), # will use the same for val and test
+        timepoints_as_samples=data_config['data'].get('timepoints_as_samples', False)
     )
     
     print(f"\nDataLoader information:")
@@ -182,8 +183,9 @@ def main():
         if model_name == "BasicVAE":
             from .models import BasicVAE
             hidden_dims = model_config['model'].get('hidden_dims', [1024, 512, 256, 128])
-            latent_dim = model_config['model'].get('latent_dim', 32)
-            model = BasicVAE(input_dim=input_dim, hidden_dims=hidden_dims, latent_dim=latent_dim, device=args.device)
+            hidden_dims = [int(i) for i in hidden_dims]
+            latent_dim = int(model_config['model'].get('latent_dim', 32))
+            model = BasicVAE(input_dim=input_dim[0], hidden_dims=hidden_dims, latent_dim=latent_dim, device=args.device)
         elif model_name == "AutoencoderKL":
             from monai.networks.nets.autoencoderkl import AutoencoderKL
             model = AutoencoderKL(

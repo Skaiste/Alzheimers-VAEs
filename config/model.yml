@@ -1,6 +1,6 @@
 model:
   freeze_encoder: false
   reset_decoder: false
-  name: Pinaya2018
+  name: BasicVAE
   hidden_dims: [512, 128]
   latent_dim: 32

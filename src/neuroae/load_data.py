@@ -259,7 +259,16 @@ class ADNIDataset(Dataset):
     Each sample is a flattened timeseries (N_ROIs * T_timepoints).
     """
     
-    def __init__(self, timeseries_data, labels=None, transpose=False, flatten=True, normaliser=None, pad_features=False, truncate_features=False):
+    def __init__(self, 
+        timeseries_data, 
+        labels=None, 
+        transpose=False, 
+        flatten=True, 
+        normaliser=None, 
+        pad_features=False, 
+        truncate_features=False,
+        timepoints_as_samples=False
+    ):
         """
         Initialize ADNI Dataset.
         
@@ -278,34 +287,35 @@ class ADNIDataset(Dataset):
         self.normaliser = normaliser
         self.pad_features = pad_features
         self.truncate_features = truncate_features
+        self.timepoints_as_samples = timepoints_as_samples
         self.original_shape = None
 
-        assert not (self.truncate_features and self.pad_features), 'Can only pad or truncate features not both'
+        assert not (self.truncate_features and self.pad_features), 'Can only choose to pad or truncate features not both.'
+        assert not (self.timepoints_as_samples and self.flatten), 'Can only choose to flatten or to treat timepoints as samples, not both.'
         
         # Convert to numpy arrays and store
         self.data = []
         for ts in timeseries_data:
             ts_array = np.array(ts)
-            if transpose:
+            if transpose or timepoints_as_samples:
                 ts_array = ts_array.T
 
             self.original_shape = ts_array.shape
             
-            if flatten:
+            if flatten and not timepoints_as_samples:
                 ts_array = ts_array.flatten()
-
-            # normalise the data per subject
-            # if normaliser is not None:
-            #     mean = ts_array.mean()
-            #     std = ts_array.std()
-            #     ts_array = (ts_array - mean) / std
 
             self.data.append(ts_array)
         
         self.data = np.array(self.data)
 
+        if timepoints_as_samples:
+            timepoint_dim = self.data.shape[1]
+            self.data = self.data.reshape(-1, self.data.shape[-1])
+            labels = np.repeat(labels, timepoint_dim).tolist()
+
         if normaliser is not None:
-            if not flatten:
+            if not flatten and not timepoints_as_samples:
                 # shape it for normaliser
                 N, P, T = self.data.shape
                 data_reshaped = self.data.transpose(0, 2, 1)
@@ -317,7 +327,7 @@ class ADNIDataset(Dataset):
                 normaliser.fit(self.data)
             self.data = normaliser.transform(self.data)
 
-            if not flatten:
+            if not flatten and not timepoints_as_samples:
                 # reshape back
                 data_scaled = self.data.reshape(N, T, P)
                 self.data = data_scaled.transpose(0, 2, 1)
@@ -424,7 +434,8 @@ def prepare_data_loaders(
     train_split=0.7,
     val_split=0.15,
     random_seed=42,
-    normalize=True
+    normalize=True,
+    timepoints_as_samples=False,
 ):
     """
     Prepare PyTorch DataLoaders from ADNI DataLoader.
@@ -505,7 +516,8 @@ def prepare_data_loaders(
         train_data, train_labels, 
         transpose=transpose, flatten=flatten, 
         normaliser=normaliser, pad_features=pad_features,
-        truncate_features=truncate_features
+        truncate_features=truncate_features,
+        timepoints_as_samples=timepoints_as_samples
     )
     print("Training dataset")
     train_dataset.describe()
@@ -526,7 +538,8 @@ def prepare_data_loaders(
         val_dataset = ADNIDataset(val_data, val_labels,
             transpose=transpose, flatten=flatten, 
             normaliser=normaliser, pad_features=pad_features,
-            truncate_features=truncate_features
+            truncate_features=truncate_features,
+            timepoints_as_samples=timepoints_as_samples
         )
         val_loader = DataLoader(
             val_dataset, batch_size=batch_size, shuffle=False
@@ -538,7 +551,8 @@ def prepare_data_loaders(
         test_dataset = ADNIDataset(test_data, test_labels,
             transpose=transpose, flatten=flatten, 
             normaliser=normaliser, pad_features=pad_features,
-            truncate_features=truncate_features
+            truncate_features=truncate_features,
+            timepoints_as_samples=timepoints_as_samples
         )
         test_loader = DataLoader(
             test_dataset, batch_size=batch_size, shuffle=False
