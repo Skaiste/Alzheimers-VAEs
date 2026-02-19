@@ -39,7 +39,10 @@ class TrainingResultsManager:
         payload["model_type"] = payload.get("model_type", "unknown")
 
         summary = payload.get("summary", {})
-        summary.setdefault("num_epochs", len(history.get("train_loss", [])))
+        derived_summary = self._derive_summary_from_history(history)
+        for key, value in derived_summary.items():
+            if summary.get(key) is None:
+                summary[key] = value
         payload["summary"] = summary
 
         experiment_dir = self.experiments_dir / experiment_id
@@ -139,3 +142,43 @@ class TrainingResultsManager:
     def _build_experiment_id() -> str:
         ts = datetime.now(timezone.utc).strftime("exp_%Y%m%d_%H%M%S")
         return f"{ts}_adhoc"
+
+    @staticmethod
+    def _metric_values(history: dict, split: str, metric: str) -> list[float]:
+        split_metrics = history.get(split)
+        if isinstance(split_metrics, dict):
+            values = split_metrics.get(metric, [])
+            if isinstance(values, list):
+                return [float(v) for v in values]
+
+        values = history.get(f"{split}_{metric}", [])
+        if isinstance(values, list):
+            return [float(v) for v in values]
+
+        metrics = history.get("metrics")
+        if isinstance(metrics, dict):
+            values = metrics.get(f"{split}_{metric}", [])
+            if isinstance(values, list):
+                return [float(v) for v in values]
+
+        return []
+
+    @classmethod
+    def _derive_summary_from_history(cls, history: dict) -> dict[str, Any]:
+        train_losses = cls._metric_values(history, "train", "loss")
+        val_losses = cls._metric_values(history, "val", "loss")
+
+        best_epoch = None
+        best_val = None
+        if val_losses:
+            best_idx = min(range(len(val_losses)), key=val_losses.__getitem__)
+            best_epoch = best_idx + 1
+            best_val = float(val_losses[best_idx])
+
+        return {
+            "num_epochs": max(len(train_losses), len(val_losses)),
+            "best_epoch": best_epoch,
+            "best_val_loss": best_val,
+            "final_train_loss": float(train_losses[-1]) if train_losses else None,
+            "final_val_loss": float(val_losses[-1]) if val_losses else None,
+        }

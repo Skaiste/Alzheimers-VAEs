@@ -33,16 +33,29 @@ def _parse_iso(ts: str) -> datetime:
 
 
 def _history_to_frame(history: dict) -> pd.DataFrame:
-    metrics = history if "metrics" not in history else history["metrics"]
+    if "metrics" in history:
+        metrics = history["metrics"]
+    elif isinstance(history.get("train"), dict) or isinstance(history.get("val"), dict):
+        metrics = {}
+        for split in ("train", "val"):
+            split_metrics = history.get(split)
+            if not isinstance(split_metrics, dict):
+                continue
+            for metric_name, values in split_metrics.items():
+                metrics[f"{split}_{metric_name}"] = values
+    else:
+        metrics = history
+
     if not metrics:
         return pd.DataFrame()
 
     rows = []
-    num_epochs = max((len(values) for values in metrics.values()), default=0)
+    num_epochs = max((len(values) for values in metrics.values() if isinstance(values, list)), default=0)
     for epoch in range(1, num_epochs + 1):
         row = {"epoch": epoch}
         for metric_name, values in metrics.items():
-            row[metric_name] = values[epoch - 1] if epoch - 1 < len(values) else None
+            if isinstance(values, list):
+                row[metric_name] = values[epoch - 1] if epoch - 1 < len(values) else None
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -82,6 +95,22 @@ def _render_pair_plot(
 
         chart_df = history_df[plot_cols].rename(columns=rename_map).set_index("epoch")
         st.line_chart(chart_df)
+
+
+def _available_metric_suffixes(columns: list[str]) -> list[str]:
+    suffixes = set()
+    for col in columns:
+        if col.startswith("train_"):
+            suffixes.add(col[len("train_"):])
+        elif col.startswith("val_"):
+            suffixes.add(col[len("val_"):])
+    return sorted(suffixes, key=lambda metric: (metric != "loss", metric))
+
+
+def _metric_title(metric_suffix: str) -> str:
+    if metric_suffix == "loss":
+        return "Total Loss"
+    return metric_suffix.replace("_", " ").title()
 
 
 def _build_sidebar(manager: TrainingResultsManager) -> dict:
@@ -240,28 +269,20 @@ def main() -> None:
         if history_df.empty:
             st.warning("No history metrics available.")
         else:
-            col_total, col_recon, col_kld = st.columns(3)
-            _render_pair_plot(
-                col_total,
-                history_df,
-                "Total Loss",
-                train_candidates=["train_loss"],
-                val_candidates=["val_loss"],
-            )
-            _render_pair_plot(
-                col_recon,
-                history_df,
-                "Reconstruction Loss",
-                train_candidates=["train_reproduction_loss", "train_reconstruction_loss"],
-                val_candidates=["val_reproduction_loss", "val_reconstruction_loss"],
-            )
-            _render_pair_plot(
-                col_kld,
-                history_df,
-                "KLD",
-                train_candidates=["train_KLD", "train_kld"],
-                val_candidates=["val_KLD", "val_kld"],
-            )
+            metric_suffixes = _available_metric_suffixes(list(history_df.columns))
+            visible_metrics = metric_suffixes[:3] if metric_suffixes else []
+            if not visible_metrics:
+                st.warning("No train/val metrics available.")
+            else:
+                plot_columns = st.columns(len(visible_metrics))
+                for container, metric_suffix in zip(plot_columns, visible_metrics):
+                    _render_pair_plot(
+                        container,
+                        history_df,
+                        _metric_title(metric_suffix),
+                        train_candidates=[f"train_{metric_suffix}"],
+                        val_candidates=[f"val_{metric_suffix}"],
+                    )
 
     with tabs[1]:
         left_meta, right_meta = st.columns(2)

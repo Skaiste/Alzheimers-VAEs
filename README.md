@@ -34,7 +34,8 @@ uv run neuroae
 
 #### Todo's:
 - keep reading papers and start looking into other types of autoencoders to implement
-- write a random search script to find best architecture & training parameters for a model
+- experiment with using timepoints as separate entries, that way increasing the volume of data, but remember to split the data into datasets first, then expand entries, i.e. do it in the dataset class
+- write a hyperparameter search script to find best training parameters for each architecture
 - look into evaluation
 - for experimentation purposes only, train a general VAE, run inference on all data, to extract latent properties and try out clustering algorithms to see if any most clear clusters could come close to the labels
 
