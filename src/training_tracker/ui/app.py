@@ -73,6 +73,7 @@ def _render_pair_plot(
     title: str,
     train_candidates: list[str],
     val_candidates: list[str],
+    pca_reference: float | None = None,
 ) -> None:
     cols = list(history_df.columns)
     train_col = _first_existing(cols, train_candidates)
@@ -94,7 +95,11 @@ def _render_pair_plot(
             rename_map[val_col] = "val"
 
         chart_df = history_df[plot_cols].rename(columns=rename_map).set_index("epoch")
-        st.line_chart(chart_df)
+        colors = ["#1f77b4", "#ff7f0e"]
+        if pca_reference is not None and val_col is not None:
+            chart_df["PCA MSE"] = float(pca_reference)
+            colors = ["#1f77b4", "#ff7f0e", "#d62728"]
+        st.line_chart(chart_df, color=colors)
 
 
 def _available_metric_suffixes(columns: list[str]) -> list[str]:
@@ -111,6 +116,34 @@ def _metric_title(metric_suffix: str) -> str:
     if metric_suffix == "loss":
         return "Total Loss"
     return metric_suffix.replace("_", " ").title()
+
+
+def _is_recon_metric(metric_suffix: str) -> bool:
+    lowered = metric_suffix.lower()
+    return "recon" in lowered or "repro" in lowered
+
+
+def _to_float(value) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _lighten_hex(hex_color: str, factor: float = 0.45) -> str:
+    hex_color = hex_color.lstrip("#")
+    r = int(hex_color[0:2], 16)
+    g = int(hex_color[2:4], 16)
+    b = int(hex_color[4:6], 16)
+    r = int(r + (255 - r) * factor)
+    g = int(g + (255 - g) * factor)
+    b = int(b + (255 - b) * factor)
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def _short_experiment_id(experiment_id: str, keep: int = 8) -> str:
+    tail = experiment_id.split("_")[-1]
+    return tail if len(tail) <= keep else tail[:keep]
 
 
 def _build_sidebar(manager: TrainingResultsManager) -> dict:
@@ -246,7 +279,7 @@ def main() -> None:
         "latent_dim",
     ]
     present_cols = [col for col in visible_cols if col in table_df.columns]
-    top_tabs = st.tabs(["Selected Experiments", "Experiment Details"])
+    top_tabs = st.tabs(["Selected Experiments", "Experiment Details", "Compare Experiments"])
 
     with top_tabs[0]:
         st.subheader("Experiments")
@@ -274,6 +307,16 @@ def main() -> None:
             if not visible_metrics:
                 st.warning("No train/val metrics available.")
             else:
+                summary = metadata.get("summary", {})
+                val_pca_mse = _to_float(summary.get("val_pca_mse"))
+                recon_metrics = [metric for metric in visible_metrics if _is_recon_metric(metric)]
+                if recon_metrics:
+                    pca_target_metrics = set(recon_metrics)
+                elif "loss" in visible_metrics:
+                    pca_target_metrics = {"loss"}
+                else:
+                    pca_target_metrics = set()
+
                 plot_columns = st.columns(len(visible_metrics))
                 for container, metric_suffix in zip(plot_columns, visible_metrics):
                     _render_pair_plot(
@@ -282,6 +325,7 @@ def main() -> None:
                         _metric_title(metric_suffix),
                         train_candidates=[f"train_{metric_suffix}"],
                         val_candidates=[f"val_{metric_suffix}"],
+                        pca_reference=val_pca_mse if metric_suffix in pca_target_metrics else None,
                     )
 
     with tabs[1]:
@@ -331,6 +375,70 @@ def main() -> None:
         st.code(json.dumps(metadata, indent=2), language="json")
         st.subheader("History JSON")
         st.code(json.dumps(history, indent=2), language="json")
+
+    with top_tabs[2]:
+        st.subheader("Compare Experiments")
+        experiment_options = [row["experiment_id"] for row in rows]
+        id_to_model = {row["experiment_id"]: row.get("model_type", "model") for row in rows}
+        default_compare = experiment_options[:2] if len(experiment_options) >= 2 else experiment_options[:1]
+        selected_compare_ids = st.multiselect(
+            "Experiments to compare",
+            options=experiment_options,
+            default=default_compare,
+            key="compare_experiment_ids",
+        )
+
+        if not selected_compare_ids:
+            st.info("Select at least one experiment.")
+            return
+
+        base_colors = [
+            "#1f77b4",
+            "#2ca02c",
+            "#9467bd",
+            "#8c564b",
+            "#17becf",
+            "#bcbd22",
+            "#ff7f0e",
+            "#d62728",
+            "#7f7f7f",
+            "#e377c2",
+        ]
+
+        series_map: dict[str, pd.Series] = {}
+        series_colors: list[str] = []
+        missing_loss: list[str] = []
+        for idx, compare_id in enumerate(selected_compare_ids):
+            compare_history = manager.get_history(compare_id)
+            compare_df = _history_to_frame(compare_history)
+            color_train = base_colors[idx % len(base_colors)]
+            color_val = _lighten_hex(color_train, factor=0.5)
+            short_id = _short_experiment_id(compare_id)
+            model_name = str(id_to_model.get(compare_id, "model")).lower()
+
+            has_metric = False
+            if "train_loss" in compare_df.columns:
+                series_map[f"train_{model_name}_{short_id}"] = compare_df.set_index("epoch")["train_loss"]
+                series_colors.append(color_train)
+                has_metric = True
+            if "val_loss" in compare_df.columns:
+                series_map[f"val_{model_name}_{short_id}"] = compare_df.set_index("epoch")["val_loss"]
+                series_colors.append(color_val)
+                has_metric = True
+            if not has_metric:
+                missing_loss.append(compare_id)
+
+        if not series_map:
+            st.warning("None of the selected experiments contain train_loss or val_loss.")
+            return
+
+        combined_df = pd.DataFrame(series_map)
+        st.line_chart(combined_df, color=series_colors)
+        if missing_loss:
+            st.caption(
+                "Skipped experiments without total loss metrics: "
+                + ", ".join(missing_loss)
+            )
 
 
 if __name__ == "__main__":
