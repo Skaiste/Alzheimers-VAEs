@@ -26,6 +26,7 @@ dependencies = [
     "scikit-learn>=1.6.1",
     "streamlit",
     "monai>=1.5.2",
+    "einops>=0.8.2",
 ]
 
 [project.scripts]

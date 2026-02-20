@@ -85,7 +85,7 @@ class Perl2023(nn.Module):
         mu, logvar = self.encode(x)
         z = self.reparameterize(mu, logvar)
         x_recon = self.decode(z)
-        return x_recon, mu, logvar#, z
+        return x_recon, mu, logvar, z
 
     def set_loss_fn_params(self, params):
         if params is not None:
@@ -94,7 +94,7 @@ class Perl2023(nn.Module):
             self.loss_fn_params = {}
 
     def loss(self, x, model_output):
-        x_hat, mu, log_var = model_output
+        x_hat, mu, log_var, _ = model_output
         beta = float(self.loss_fn_params.get("beta", 1.0))
 
         # per-sample reconstruction loss

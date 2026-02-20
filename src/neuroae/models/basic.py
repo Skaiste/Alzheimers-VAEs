@@ -79,7 +79,7 @@ class BasicVAE(nn.Module):
         z = self.reparameterize(mean, torch.exp(0.5 * log_var)) # takes exponential function (log var -> var)
         x_hat = self.decoder(z)
 
-        return x_hat, mean, log_var#, z
+        return x_hat, mean, log_var, z
 
     def set_loss_fn_params(self, params):
         if params is not None:
@@ -88,7 +88,7 @@ class BasicVAE(nn.Module):
             self.loss_fn_params = {}
     
     def loss(self, x, model_output):
-        x_hat, mu, log_var = model_output
+        x_hat, mu, log_var, _ = model_output
         error_per_feature = self.loss_fn_params.get("loss_per_feature", True)
         kld_weight = float(self.loss_fn_params.get("kld_weight", 1.0))
         # if selected error per feature, we are averaging everything

@@ -5,12 +5,12 @@ This script loads ADNI-B data and can be used for training models or running inf
 """
 
 import argparse
-import os
 import torch
 import pathlib
 import yaml
 from copy import deepcopy
 from neuronumba.tools.filters import BandPassFilter
+from sklearn.decomposition import PCA
 
 from .utils import *
 from .load_data import load_adni, prepare_data_loaders
@@ -23,7 +23,7 @@ def load_config(config_path):
     return conf
 
 
-def _build_training_summary(history):
+def _build_training_summary(history, mse_pca):
     def _metric_values(split, metric):
         split_metrics = history.get(split)
         if isinstance(split_metrics, dict):
@@ -44,6 +44,7 @@ def _build_training_summary(history):
     return {
         'num_epochs': max(len(train_losses), len(val_losses)),
         'best_epoch': best_epoch,
+        'val_pca_mse': mse_pca,
         'best_val_loss': best_val,
         'final_train_loss': float(train_losses[-1]) if train_losses else None,
         'final_val_loss': float(val_losses[-1]) if val_losses else None,
@@ -181,6 +182,7 @@ def main():
         from .train import train_vae_basic
 
         input_dim = loaders['input_dim']
+        latent_dim = 0
 
         model_config = load_config(args.model_config)
         model_name = model_config['model']['name']
@@ -191,7 +193,8 @@ def main():
             latent_dim = int(model_config['model'].get('latent_dim', 32))
             model = BasicVAE(input_dim=input_dim[0], hidden_dims=hidden_dims, latent_dim=latent_dim, device=args.device)
         elif model_name == "AutoencoderKL":
-            from monai.networks.nets.autoencoderkl import AutoencoderKL
+            from .models.monaiAEKL import AutoencoderKL
+            latent_dim = int(model_config['model'].get('latent_channels', 8))
             model = AutoencoderKL(
                 spatial_dims=1,
                 in_channels=input_dim[0],
@@ -199,7 +202,7 @@ def main():
                 num_res_blocks=int(model_config['model'].get('num_res_blocks', 1)),
                 channels=[int(i) for i in model_config['model'].get('channels', [64, 128, 256])],
                 attention_levels=[int(i) for i in model_config['model'].get('attention_levels', [False]*3)],
-                latent_channels=int(model_config['model'].get('latent_channels', 8)),
+                latent_channels=latent_dim,
                 norm_num_groups=int(model_config['model'].get('norm_num_groups', 32)),
                 norm_eps=float(model_config['model'].get('norm_eps', 1e-6)),
                 with_encoder_nonlocal_attn=False,
@@ -207,19 +210,21 @@ def main():
             )
         elif model_name == "Pinaya2018":
             from .models.pinaya2018 import Pinaya2018
+            latent_dim = int(model_config['model'].get('latent_dim', 32))
             model = Pinaya2018(
                 input_dim=input_dim[0],
                 hidden_dims=[int(i) for i in model_config['model'].get('hidden_dims', [1024, 256])],
-                latent_dim=int(model_config['model'].get('latent_dim', 32)),
+                latent_dim=latent_dim,
                 dropout=float(model_config['model'].get('dropout', 0.0)),
                 use_batchnorm=model_config['model'].get('use_batchnorm', False),
                 final_activation=model_config['model'].get('final_activation', None),
             )
         elif model_name == "Perl2023":
             from .models.perl2023 import Perl2023
+            latent_dim = int(model_config['model'].get('latent_dim', 10))
             model = Perl2023(
                 input_dim=input_dim[0],
-                latent_dim=int(model_config['model'].get('latent_dim', 10)),
+                latent_dim=latent_dim,
                 hidden_dims=[int(i) for i in model_config['model'].get('hidden_dims', [256, 128])],
                 dropout=float(model_config['model'].get('dropout', 0.0)),
                 use_layernorm=model_config['model'].get('use_layernorm', True),
@@ -253,8 +258,15 @@ def main():
         )
         print(f"Experiment ID: {experiment_id}")
 
+        # PCA for validation fit on the training data
+        pca = PCA(latent_dim)
+        if len(loaders['train_loader'].dataset.data.shape) > 2:
+            pca.fit(loaders['train_loader'].dataset.data.reshape(loaders['train_loader'].dataset.data.shape[0], -1))
+        else:
+            pca.fit(loaders['train_loader'].dataset.data)
+
         pathlib.Path(training_config['training']['save_dir']).mkdir(parents=True, exist_ok=True)
-        history = train_vae_basic(
+        history, mse_pca = train_vae_basic(
             model,
             loaders['train_loader'],
             loaders['val_loader'],
@@ -263,7 +275,8 @@ def main():
             weight_decay=float(training_config['training'].get('weight_decay', 1e-4)),
             device=args.device,
             save_dir=training_config['training']['save_dir'],
-            name=experiment_id
+            name=experiment_id,
+            pca=pca
         )
         # os.makedirs('plots', exist_ok=True)
         # plot_training_history(history, save_path=f'plots/{experiment_id}_training_history.png', show=False)
@@ -274,7 +287,7 @@ def main():
             'experiment_id': experiment_id,
             'status': 'completed',
             'model_type': model_name,
-            'summary': _build_training_summary(history),
+            'summary': _build_training_summary(history, mse_pca),
             'model_params': deepcopy(model_config.get('model', {})),
             'training_params': deepcopy(training_config.get('training', {})),
             'data_params': deepcopy(data_config),

@@ -1,6 +1,6 @@
 model:
   freeze_encoder: false
   reset_decoder: false
-  name: Perl2023
-  hidden_dims: [256, 128]
-  latent_dim: 10
+  name: AutoencoderKL
+  channels: [64, 128, 256]
+  latent_channels: 10

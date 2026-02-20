@@ -333,7 +333,7 @@ class ADNIDataset(Dataset):
                 data_scaled = self.data.reshape(N, T, P)
                 self.data = data_scaled.transpose(0, 2, 1)
 
-        if pad_features:
+        if pad_features and self.data.shape[-1]%4 != 0:
             pad_by = 4 - self.data.shape[-1]%4
             self.data = np.pad(self.data, [(0,0),(0,0),(0,pad_by)], mode='constant', constant_values=0)
 

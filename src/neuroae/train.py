@@ -20,6 +20,7 @@ def train_vae_basic(
     device='cuda' if torch.cuda.is_available() else 'cpu',
     save_dir='./checkpoints',
     name='basicVAE_general',
+    pca=None
 ):
     device = torch.device(device)
     model = model.to(device)
@@ -58,8 +59,8 @@ def train_vae_basic(
 
         # validation
         model.eval()
+        val_loss_params = {}
         with torch.no_grad():
-            val_loss_params = {}
             for batch_idx, (data, _) in enumerate(val_loader):
                 x = data.to(device)
                 output = model(x)
@@ -87,6 +88,21 @@ def train_vae_basic(
                 "val": {p:val_loss_params[p] / num_val_batches for p in val_loss_params}
             }
             torch.save(model.state_dict(), f'{save_dir}/{name}_model.pt')
+
+    # run validation set through pca
+    mse_pca = 0
+    if pca is not None:
+        total_mse_pca = 0
+        num_batches = 0
+        for batch_idx, (data, _) in enumerate(val_loader):
+            x = data if len(data.shape) == 2 else data.reshape(data.shape[0],-1)
+            z_pca = pca.transform(x)
+            x_recon_pca = pca.inverse_transform(z_pca)
+            mse_pca = torch.mean((x - x_recon_pca) ** 2)
+            total_mse_pca += mse_pca
+            num_batches += 1
+        mse_pca = float(total_mse_pca / num_batches)
+        
             
     print("Training complete!")
-    return history
+    return history, mse_pca
