@@ -45,7 +45,7 @@ def load_config(config_path):
     return _normalize_numeric_values(conf)
 
 
-def load_data_from_config(data_dir, data_config):
+def load_data_from_config(data_dir, data_config, num_workers=0):
     global CACHED_ADNI
     if CACHED_ADNI is None:
         # Load ADNI data
@@ -95,6 +95,7 @@ def load_data_from_config(data_dir, data_config):
     loaders = prepare_data_loaders(
         data_loader,
         batch_size=data_config['data'].get('batch_size', 16),
+        num_workers=num_workers,
         transpose=data_config['data'].get('transpose', False),
         flatten=data_config['data'].get('flatten', False),
         pad_features=data_config['data'].get('pad_features', False),
@@ -356,7 +357,15 @@ def run_training(model, model_name, latent_dim, loaders, training_config, model_
     return experiment_metadata['experiment_id']
 
 
-def run_evaluation(model, latent_dim, loaders, training_config, device, experiment_id=None):
+def run_evaluation(
+    model,
+    latent_dim,
+    loaders,
+    training_config,
+    device,
+    experiment_id=None,
+    delete_model_after_eval=True,
+):
     from .eval import eval_vae
 
     # Fit PCA on training data and pass it into evaluation for baseline comparison.
@@ -387,13 +396,28 @@ def run_evaluation(model, latent_dim, loaders, training_config, device, experime
         pca_metrics=eval_metrics.get("pca"),
     )
     print(f"Stored evaluation metrics for experiment: {target_experiment_id}")
+    if delete_model_after_eval:
+        if model_path.exists():
+            model_path.unlink()
+            print(f"Deleted model artifact after evaluation: {model_path}")
+        else:
+            print(f"Model artifact already missing, nothing to delete: {model_path}")
     return eval_metrics
 
 
-def run_experiment_pipeline(data_dir, device, data_config, model_config, training_config):
+def run_experiment_pipeline(
+    data_dir,
+    device,
+    data_config,
+    model_config,
+    training_config,
+    delete_model_after_eval=True,
+    num_workers=0,
+):
     loaders = load_data_from_config(
         data_dir=data_dir,
         data_config=data_config,
+        num_workers=num_workers,
     )
     input_dim = loaders['input_dim']
     timepoint_dim = loaders['timepoint_dim']
@@ -421,6 +445,7 @@ def run_experiment_pipeline(data_dir, device, data_config, model_config, trainin
         training_config,
         device=device,
         experiment_id=exp_id,
+        delete_model_after_eval=delete_model_after_eval,
     )
     return exp_id
 
@@ -483,10 +508,24 @@ def main():
         default=1,
         help='Maximum number of experiments to run concurrently in exp mode (default: 1).'
     )
+    parser.add_argument(
+        '--delete-model-after-eval',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help='Delete model artifact after evaluation completes (default: true). Use --no-delete-model-after-eval to keep it.'
+    )
+    parser.add_argument(
+        '--num-workers',
+        type=int,
+        default=0,
+        help='Number of DataLoader worker processes (default: 0).'
+    )
     
     args = parser.parse_args()
     if args.num_parallel_experiments < 1:
         parser.error('--num-parallel-experiments must be >= 1')
+    if args.num_workers < 0:
+        parser.error('--num-workers must be >= 0')
     
     print("=" * 60)
     print("ADNI-B VAE")
@@ -498,6 +537,7 @@ def main():
         loaders = load_data_from_config(
             data_dir=args.data_dir,
             data_config=data_config,
+            num_workers=args.num_workers,
         )
         print(f"\nTesting data loading...")
         sample_batch = next(iter(loaders['train_loader']))
@@ -524,6 +564,7 @@ def main():
         loaders = load_data_from_config(
             data_dir=args.data_dir,
             data_config=data_config,
+            num_workers=args.num_workers,
         )
         input_dim = loaders['input_dim']
         timepoint_dim = loaders['timepoint_dim']
@@ -557,6 +598,7 @@ def main():
         loaders = load_data_from_config(
             data_dir=args.data_dir,
             data_config=data_config,
+            num_workers=args.num_workers,
         )
 
         input_dim = loaders['input_dim']
@@ -577,6 +619,7 @@ def main():
             training_config,
             device=args.device,
             experiment_id=args.exp_name,
+            delete_model_after_eval=args.delete_model_after_eval,
         )
     elif args.mode == 'exp':
         print("\n" + "=" * 60)
@@ -650,6 +693,8 @@ def main():
                     data_config=dc,
                     model_config=mc,
                     training_config=tc,
+                    delete_model_after_eval=args.delete_model_after_eval,
+                    num_workers=args.num_workers,
                 )
         else:
             print(f"Running up to {max_workers} experiments concurrently")
@@ -663,6 +708,8 @@ def main():
                         dc,
                         mc,
                         tc,
+                        args.delete_model_after_eval,
+                        args.num_workers,
                     )
                     futures[future] = i
 

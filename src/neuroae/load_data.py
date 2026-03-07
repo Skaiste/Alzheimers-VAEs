@@ -8,6 +8,7 @@ interface for use in main.py and other scripts.
 
 import sys
 import csv
+import platform
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -596,6 +597,7 @@ def prepare_data_loaders(
     split_mode="none",
     datasplit_file=None,
     preserve_timepoints=False,
+    num_workers=0,
 ):
     """
     Prepare PyTorch DataLoaders from ADNI DataLoader.
@@ -756,8 +758,14 @@ def prepare_data_loaders(
     print("Training dataset")
     train_dataset.describe()
 
+    pin_memory = platform.system().lower() != "darwin"
+
     train_loader = DataLoader(
-        train_dataset, batch_size=batch_size, shuffle=shuffle_train
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=shuffle_train,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
     )
 
     input_dim = train_dataset.data[0].shape
@@ -780,7 +788,11 @@ def prepare_data_loaders(
             preserve_timepoints=preserve_timepoints
         )
         val_loader = DataLoader(
-            val_dataset, batch_size=batch_size, shuffle=False
+            val_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
         )
         result['val_loader'] = val_loader
         result['num_samples']['val'] = len(val_dataset)
@@ -795,7 +807,11 @@ def prepare_data_loaders(
             preserve_timepoints=preserve_timepoints
         )
         test_loader = DataLoader(
-            test_dataset, batch_size=batch_size, shuffle=False
+            test_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
         )
         result['test_loader'] = test_loader
         result['num_samples']['test'] = len(test_dataset)
