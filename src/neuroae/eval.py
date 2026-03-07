@@ -7,6 +7,7 @@ from .utils.np_utils import to_numpy
 from .metrics.fc_preservation import fc_preservation_score
 from .metrics.silhouette import silhouette
 from .metrics.logreg_accuracy import logreg_accuracy_cv
+from .metrics.swfcd_torch import SwFCD
 
 
 def _dataset_valid_last_dim(dataset):
@@ -79,6 +80,16 @@ def _masked_mse_numpy(x_hat, x, mask):
     return float(np.sum(se) / denom)
 
 
+def _to_scalar_metric(value):
+    if torch.is_tensor(value):
+        return float(value.detach().cpu().item())
+    if isinstance(value, (list, tuple)):
+        return float(np.mean(value)) if len(value) > 0 else float("nan")
+    if isinstance(value, np.ndarray):
+        return float(np.mean(value)) if value.size > 0 else float("nan")
+    return float(value)
+
+
 def _extract_model_outputs(model_out):
     """Return reconstruction and latent matrix from model outputs."""
     if isinstance(model_out, dict):
@@ -106,13 +117,22 @@ def _extract_model_outputs(model_out):
 
 
 
-def _compute_pca_metrics(pca, inputs, latents, labels, dataset, valid_mask=None):
+def _compute_pca_metrics(pca, swfcd, inputs, latents, labels, dataset, valid_mask=None):
     mse = np.nan
     fc = np.nan
+    swfcd_results = {'pearson': np.nan, 'mad': np.nan, 'rmse': np.nan}
     if inputs.size > 0:
         recon = pca.inverse_transform(pca.transform(inputs))
         mse = _masked_mse_numpy(recon, inputs, valid_mask)
         fc = fc_preservation_score(inputs, recon, dataset)
+
+        inputs_t = torch.as_tensor(inputs, dtype=torch.float32)
+        recon_t = torch.as_tensor(recon, dtype=torch.float32)
+        swfcd_results = swfcd.apply(inputs_t, recon_t)
+
+    swfcd_pearson = _to_scalar_metric(swfcd_results['pearson']) if swfcd_results else np.nan
+    swfcd_mad = _to_scalar_metric(swfcd_results['mad']) if swfcd_results else np.nan
+    swfcd_rmse = _to_scalar_metric(swfcd_results['rmse']) if swfcd_results else np.nan
 
     sil = silhouette(latents, labels)
     logreg_acc = logreg_accuracy_cv(latents, labels)
@@ -121,6 +141,9 @@ def _compute_pca_metrics(pca, inputs, latents, labels, dataset, valid_mask=None)
         "fc_preservation": fc,
         "silhouette": sil,
         "logreg_accuracy": logreg_acc,
+        "swfcd_pearson": swfcd_pearson,
+        "swfcd_mad": swfcd_mad,
+        "swfcd_rmse": swfcd_rmse,
     }
 
 
@@ -149,6 +172,8 @@ def eval_vae(
     all_latents = []
     all_masks = []
 
+    swfcd = SwFCD(data_loader.dataset, 30, 3)
+
     with torch.no_grad():
         for data, _ in data_loader:
             x = data.to(device)
@@ -171,25 +196,36 @@ def eval_vae(
     mse = _masked_mse_torch(x_hat_all, x_all, valid_mask_all)
     fc_preservation = fc_preservation_score(x_all, x_hat_all, data_loader.dataset)
 
+    swfcd_results = swfcd.apply(x_all, x_hat_all)
+    swfcd_pearson = _to_scalar_metric(swfcd_results['pearson']) if swfcd_results else np.nan
+    swfcd_mad = _to_scalar_metric(swfcd_results['mad']) if swfcd_results else np.nan
+    swfcd_rmse = _to_scalar_metric(swfcd_results['rmse']) if swfcd_results else np.nan
+
     z_np = to_numpy(z_all)
     labels = np.asarray(getattr(data_loader.dataset, "labels", []))
-    silhouette = silhouette(z_np, labels)
+    sil = silhouette(z_np, labels)
     logreg_acc = logreg_accuracy_cv(z_np, labels)
 
     metrics = {
         "model": {
             "mse": mse,
             "fc_preservation": fc_preservation,
-            "silhouette": silhouette,
+            "silhouette": sil,
             "logreg_accuracy": logreg_acc,
+            "swfcd_pearson": swfcd_pearson,
+            "swfcd_mad": swfcd_mad,
+            "swfcd_rmse": swfcd_rmse,
         }
     }
 
     print("Inference metrics (model):")
     print(f"  MSE: {mse:.6f}")
     print(f"  FC preservation: {fc_preservation:.6f}" if np.isfinite(fc_preservation) else "  FC preservation: nan")
-    print(f"  Silhouette: {silhouette:.6f}" if np.isfinite(silhouette) else "  Silhouette: nan")
+    print(f"  Silhouette: {sil:.6f}" if np.isfinite(sil) else "  Silhouette: nan")
     print(f"  Logistic regression accuracy (CV): {logreg_acc:.6f}" if np.isfinite(logreg_acc) else "  Logistic regression accuracy (CV): nan")
+    print(f"  SwFCD Pearson: {swfcd_pearson:.6f}" if np.isfinite(swfcd_pearson) else "  SwFCD Pearson: nan")
+    print(f"  SwFCD Mean absolute difference: {swfcd_mad:.6f}" if np.isfinite(swfcd_mad) else "  SwFCD Mean absolute difference: nan")
+    print(f"  SwFCD RMSE: {swfcd_rmse:.6f}" if np.isfinite(swfcd_rmse) else "  SwFCD RMSE: nan")
 
     if pca is not None:
         x_all = x_all.detach().cpu().numpy()
@@ -198,6 +234,7 @@ def eval_vae(
 
         pca_metrics = _compute_pca_metrics(
             pca=pca,
+            swfcd=swfcd,
             inputs=x_all,
             latents=z_pca,
             labels=labels,
@@ -211,6 +248,9 @@ def eval_vae(
             "fc_delta_model_minus_pca": metrics["model"]["fc_preservation"] - pca_metrics["fc_preservation"],
             "silhouette_delta_model_minus_pca": metrics["model"]["silhouette"] - pca_metrics["silhouette"],
             "logreg_delta_model_minus_pca": metrics["model"]["logreg_accuracy"] - pca_metrics["logreg_accuracy"],
+            "swfcd_pearson_delta_model_minus_pca": metrics["model"]["swfcd_pearson"] - pca_metrics["swfcd_pearson"],
+            "swfcd_mad_delta_model_minus_pca": metrics["model"]["swfcd_mad"] - pca_metrics["swfcd_mad"],
+            "swfcd_rmse_delta_model_minus_pca": metrics["model"]["swfcd_rmse"] - pca_metrics["swfcd_rmse"],
         }
 
         print("Inference metrics (PCA baseline):")
@@ -225,6 +265,21 @@ def eval_vae(
             f"  Logistic regression accuracy (CV): {pca_metrics['logreg_accuracy']:.6f}"
             if np.isfinite(pca_metrics['logreg_accuracy'])
             else "  Logistic regression accuracy (CV): nan"
+        )
+        print(
+            f"  SwFCD Pearson: {pca_metrics['swfcd_pearson']:.6f}"
+            if np.isfinite(pca_metrics['swfcd_pearson'])
+            else "  SwFCD Pearson: nan"
+        )
+        print(
+            f"  SwFCD Mean absolute difference: {pca_metrics['swfcd_mad']:.6f}"
+            if np.isfinite(pca_metrics['swfcd_mad'])
+            else "  SwFCD Mean absolute difference: nan"
+        )
+        print(
+            f"  SwFCD RMSE: {pca_metrics['swfcd_rmse']:.6f}"
+            if np.isfinite(pca_metrics['swfcd_rmse'])
+            else "  SwFCD RMSE: nan"
         )
 
         print("Model vs PCA deltas (model - PCA):")
@@ -243,6 +298,21 @@ def eval_vae(
             f"  Logistic regression accuracy delta: {metrics['comparison']['logreg_delta_model_minus_pca']:.6f}"
             if np.isfinite(metrics['comparison']['logreg_delta_model_minus_pca'])
             else "  Logistic regression accuracy delta: nan"
+        )
+        print(
+            f"  SwFCD Pearson delta: {metrics['comparison']['swfcd_pearson_delta_model_minus_pca']:.6f}"
+            if np.isfinite(metrics['comparison']['swfcd_pearson_delta_model_minus_pca'])
+            else "  SwFCD Pearson delta: nan"
+        )
+        print(
+            f"  SwFCD Mean absolute difference delta: {metrics['comparison']['swfcd_mad_delta_model_minus_pca']:.6f}"
+            if np.isfinite(metrics['comparison']['swfcd_mad_delta_model_minus_pca'])
+            else "  SwFCD Mean absolute difference delta: nan"
+        )
+        print(
+            f"  SwFCD RMSE delta: {metrics['comparison']['swfcd_rmse_delta_model_minus_pca']:.6f}"
+            if np.isfinite(metrics['comparison']['swfcd_rmse_delta_model_minus_pca'])
+            else "  SwFCD RMSE delta: nan"
         )
 
     return metrics
