@@ -117,11 +117,13 @@ class ADNI_B_N193_filtered(ADNI_B_N193_no_filt):
     def _loadAllData(self):
         super()._loadAllData()
         # normalise the data
+        total_data = sum([len(self.timeseries[task]) for task in self.groups])
+        initial_shape = list(self.timeseries[self.groups[0]].values())[0].shape
         # create flattened representation of all the data
         flattened_data = np.array([d.flatten() for task in self.groups for d in self.timeseries[task].values()])
         flattened_data = self.normaliser.fit_transform(flattened_data)
         # reverse flattening back into the same format timeseries[task][subject]
-        flattened_reshaped = flattened_data.reshape(193, 400, 197)
+        flattened_reshaped = flattened_data.reshape(total_data, initial_shape[0], initial_shape[1])
         index = 0
         reversed = {task:{} for task in self.groups}
         for task in self.groups:
@@ -284,7 +286,8 @@ class ADNIDataset(Dataset):
         pad_features=False, 
         truncate_features=False,
         timepoints_as_samples=False,
-        fc_input=False
+        fc_input=False,
+        preserve_timepoints=False,
     ):
         """
         Initialize ADNI Dataset.
@@ -308,6 +311,9 @@ class ADNIDataset(Dataset):
         self.original_shape = None
         self.subject_ids = subject_ids
 
+        self.preserve_timepoints = preserve_timepoints
+        self.timepoint_dim = None
+
         assert not (self.truncate_features and self.pad_features), 'Can only choose to pad or truncate features not both.'
         assert not (self.timepoints_as_samples and self.flatten), 'Can only choose to flatten or to treat timepoints as samples, not both.'
         
@@ -315,6 +321,9 @@ class ADNIDataset(Dataset):
         self.data = []
         for ts in timeseries_data:
             ts_array = np.array(ts)
+            
+            self.timepoint_dim = ts_array.shape[-1]
+
             if transpose or timepoints_as_samples:
                 ts_array = ts_array.T
 
@@ -586,6 +595,7 @@ def prepare_data_loaders(
     fc_input=False,
     split_mode="none",
     datasplit_file=None,
+    preserve_timepoints=False,
 ):
     """
     Prepare PyTorch DataLoaders from ADNI DataLoader.
@@ -740,7 +750,8 @@ def prepare_data_loaders(
         pad_features=pad_features,
         truncate_features=truncate_features,
         timepoints_as_samples=timepoints_as_samples,
-        fc_input=fc_input
+        fc_input=fc_input,
+        preserve_timepoints=preserve_timepoints
     )
     print("Training dataset")
     train_dataset.describe()
@@ -754,7 +765,8 @@ def prepare_data_loaders(
     result = {
         'train_loader': train_loader,
         'input_dim': input_dim,
-        'timepoint_dim': train_dataset.original_shape[1],
+        'timepoint_dim': train_dataset.timepoint_dim,
+        'preserve_timepoints': preserve_timepoints,
         'num_samples': {'train': len(train_dataset)},
     }
     
@@ -764,7 +776,8 @@ def prepare_data_loaders(
             pad_features=pad_features,
             truncate_features=truncate_features,
             timepoints_as_samples=timepoints_as_samples,
-            fc_input=fc_input
+            fc_input=fc_input,
+            preserve_timepoints=preserve_timepoints
         )
         val_loader = DataLoader(
             val_dataset, batch_size=batch_size, shuffle=False
@@ -778,7 +791,8 @@ def prepare_data_loaders(
             pad_features=pad_features,
             truncate_features=truncate_features,
             timepoints_as_samples=timepoints_as_samples,
-            fc_input=fc_input
+            fc_input=fc_input,
+            preserve_timepoints=preserve_timepoints
         )
         test_loader = DataLoader(
             test_dataset, batch_size=batch_size, shuffle=False

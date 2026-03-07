@@ -8,6 +8,83 @@ from sklearn.metrics import silhouette_score
 from sklearn.model_selection import StratifiedKFold, cross_val_score
 
 
+def _dataset_valid_last_dim(dataset):
+    if not getattr(dataset, "pad_features", False):
+        return None
+    original_shape = getattr(dataset, "original_shape", None)
+    if original_shape is None or len(original_shape) == 0:
+        return None
+    valid_last_dim = int(original_shape[-1])
+    if valid_last_dim <= 0:
+        return None
+    return valid_last_dim
+
+
+def _trim_last_dim(x, dataset):
+    valid_last_dim = _dataset_valid_last_dim(dataset)
+    if valid_last_dim is None or x.shape[-1] <= valid_last_dim:
+        return x
+    return x[..., :valid_last_dim]
+
+
+def _build_valid_mask(x, dataset):
+    valid_last_dim = _dataset_valid_last_dim(dataset)
+    if valid_last_dim is None or x.shape[-1] <= valid_last_dim:
+        return None
+    mask = torch.zeros_like(x)
+    mask[..., :valid_last_dim] = 1.0
+    return mask
+
+
+def _apply_recon_mask(x, model_output, mask):
+    if mask is None:
+        return model_output
+
+    def _mask_recon(recon):
+        return recon * mask + x * (1.0 - mask)
+
+    if isinstance(model_output, dict):
+        out = dict(model_output)
+        for key in ("x_hat", "recon", "reconstruction"):
+            if key in out and torch.is_tensor(out[key]):
+                out[key] = _mask_recon(out[key])
+                break
+        return out
+
+    if isinstance(model_output, tuple):
+        if len(model_output) == 0:
+            return model_output
+        return (_mask_recon(model_output[0]), *model_output[1:])
+
+    if isinstance(model_output, list):
+        if len(model_output) == 0:
+            return model_output
+        out = list(model_output)
+        out[0] = _mask_recon(out[0])
+        return out
+
+    if torch.is_tensor(model_output):
+        return _mask_recon(model_output)
+
+    return model_output
+
+
+def _masked_mse_torch(x_hat, x, mask):
+    if mask is None:
+        return float(F.mse_loss(x_hat, x, reduction="mean").item())
+    se = (x_hat - x).pow(2) * mask
+    denom = mask.sum().clamp_min(1.0)
+    return float((se.sum() / denom).item())
+
+
+def _masked_mse_numpy(x_hat, x, mask):
+    if mask is None:
+        return float(np.mean((x_hat - x) ** 2))
+    se = ((x_hat - x) ** 2) * mask
+    denom = np.maximum(np.sum(mask), 1.0)
+    return float(np.sum(se) / denom)
+
+
 def _to_numpy(data):
     if isinstance(data, torch.Tensor):
         return data.detach().cpu().numpy()
@@ -199,18 +276,13 @@ def _flatten_batch(batch):
     return batch_np.reshape(batch_np.shape[0], -1)
 
 
-def _compute_pca_metrics(pca, inputs_flat, latents, labels):
+def _compute_pca_metrics(pca, inputs, latents, labels, dataset, valid_mask=None):
     mse = np.nan
     fc = np.nan
-    if inputs_flat.size > 0:
-        recon_flat = pca.inverse_transform(pca.transform(inputs_flat))
-        mse = float(np.mean((inputs_flat - recon_flat) ** 2))
-        correlations = []
-        for i in range(inputs_flat.shape[0]):
-            corr = _vector_correlation(inputs_flat[i], recon_flat[i])
-            if np.isfinite(corr):
-                correlations.append(corr)
-        fc = float(np.mean(correlations)) if correlations else np.nan
+    if inputs.size > 0:
+        recon = pca.inverse_transform(pca.transform(inputs))
+        mse = _masked_mse_numpy(recon, inputs, valid_mask)
+        fc = _fc_preservation_score(inputs, recon, dataset)
 
     sil = _silhouette(latents, labels)
     logreg_acc = _logreg_accuracy_cv(latents, labels)
@@ -245,22 +317,28 @@ def eval_vae(
     all_inputs = []
     all_recons = []
     all_latents = []
+    all_masks = []
 
     with torch.no_grad():
         for data, _ in data_loader:
             x = data.to(device)
+            valid_mask = _build_valid_mask(x, data_loader.dataset)
             model_out = model(x)
+            model_out = _apply_recon_mask(x, model_out, valid_mask)
             recon_x, latent = _extract_model_outputs(model_out)
 
             all_inputs.append(x.detach().cpu())
             all_recons.append(recon_x.detach().cpu())
             all_latents.append(latent.detach().cpu())
+            if valid_mask is not None:
+                all_masks.append(valid_mask.detach().cpu())
 
     x_all = torch.cat(all_inputs, dim=0)
     x_hat_all = torch.cat(all_recons, dim=0)
     z_all = torch.cat(all_latents, dim=0)
+    valid_mask_all = torch.cat(all_masks, dim=0) if all_masks else None
 
-    mse = float(F.mse_loss(x_hat_all, x_all, reduction="mean").item())
+    mse = _masked_mse_torch(x_hat_all, x_all, valid_mask_all)
     fc_preservation = _fc_preservation_score(x_all, x_hat_all, data_loader.dataset)
 
     z_np = _to_numpy(z_all)
@@ -284,14 +362,17 @@ def eval_vae(
     print(f"  Logistic regression accuracy (CV): {logreg_acc:.6f}" if np.isfinite(logreg_acc) else "  Logistic regression accuracy (CV): nan")
 
     if pca is not None:
-        x_flat = _flatten_batch(x_all)
-        z_pca = pca.transform(x_flat)
+        x_all = x_all.detach().cpu().numpy()
+        valid_mask_np = _to_numpy(valid_mask_all) if valid_mask_all is not None else None
+        z_pca = pca.transform(x_all)
 
         pca_metrics = _compute_pca_metrics(
             pca=pca,
-            inputs_flat=x_flat,
+            inputs=x_all,
             latents=z_pca,
             labels=labels,
+            dataset=data_loader.dataset,
+            valid_mask=valid_mask_np,
         )
 
         metrics["pca"] = pca_metrics

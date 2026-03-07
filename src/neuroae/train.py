@@ -3,6 +3,67 @@ import torch.optim as optim
 import torch.nn.functional as F
 
 
+def _dataset_valid_last_dim(dataset):
+    if not getattr(dataset, "pad_features", False):
+        return None
+    original_shape = getattr(dataset, "original_shape", None)
+    if original_shape is None or len(original_shape) == 0:
+        return None
+    valid_last_dim = int(original_shape[-1])
+    if valid_last_dim <= 0:
+        return None
+    return valid_last_dim
+
+
+def _build_valid_mask(x, valid_last_dim):
+    if valid_last_dim is None or x.shape[-1] <= valid_last_dim:
+        return None
+    mask = torch.zeros_like(x)
+    mask[..., :valid_last_dim] = 1.0
+    return mask
+
+
+def _apply_recon_mask(x, model_output, mask):
+    if mask is None:
+        return model_output
+
+    def _mask_recon(recon):
+        return recon * mask + x * (1.0 - mask)
+
+    if isinstance(model_output, dict):
+        out = dict(model_output)
+        for key in ("x_hat", "recon", "reconstruction"):
+            if key in out and torch.is_tensor(out[key]):
+                out[key] = _mask_recon(out[key])
+                break
+        return out
+
+    if isinstance(model_output, tuple):
+        if len(model_output) == 0:
+            return model_output
+        return (_mask_recon(model_output[0]), *model_output[1:])
+
+    if isinstance(model_output, list):
+        if len(model_output) == 0:
+            return model_output
+        out = list(model_output)
+        out[0] = _mask_recon(out[0])
+        return out
+
+    if torch.is_tensor(model_output):
+        return _mask_recon(model_output)
+
+    return model_output
+
+
+def _masked_mse(x_hat, x, mask):
+    if mask is None:
+        return F.mse_loss(x_hat, x, reduction="mean")
+    se = (x_hat - x).pow(2) * mask
+    denom = mask.sum().clamp_min(1.0)
+    return se.sum() / denom
+
+
 def loss_params2str(train_params, train_batches, val_params, val_batches):
     def _format_loss_dict(params, type, batches):
         return " | ".join(f"{type} {k}: {float(v/batches):.4f}" for k, v in params.items())
@@ -36,12 +97,15 @@ def train_vae(
     }
     best_model_losses = None
     optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    train_valid_last_dim = _dataset_valid_last_dim(train_loader.dataset)
+    val_valid_last_dim = _dataset_valid_last_dim(val_loader.dataset)
     for epoch in range(num_epochs):
         train_loss_params = {}
 
         model.train()
         for batch_idx, (data, _) in enumerate(train_loader):
             x = data.to(device)
+            valid_mask = _build_valid_mask(x, train_valid_last_dim)
 
             if noise is not None:
                 if noise['type'] == 'gaussian':
@@ -54,6 +118,7 @@ def train_vae(
             optimizer.zero_grad()
 
             output = model(x)
+            output = _apply_recon_mask(x, output, valid_mask)
             loss = model.loss(x, output)
             for p in loss:
                 if p not in train_loss_params:
@@ -76,7 +141,9 @@ def train_vae(
         with torch.no_grad():
             for batch_idx, (data, _) in enumerate(val_loader):
                 x = data.to(device)
+                valid_mask = _build_valid_mask(x, val_valid_last_dim)
                 output = model(x)
+                output = _apply_recon_mask(x, output, valid_mask)
                 loss = model.loss(x, output)
 
                 for p in loss:
@@ -108,10 +175,12 @@ def train_vae(
         total_mse_pca = 0
         num_batches = 0
         for batch_idx, (data, _) in enumerate(val_loader):
+            x = data.to(device)
+            valid_mask = _build_valid_mask(x, val_valid_last_dim)
             z_pca = pca.transform(x.detach().cpu().numpy())
             x_recon_pca = pca.inverse_transform(z_pca)
             x_recon_pca = torch.as_tensor(x_recon_pca, dtype=x.dtype, device=x.device)
-            mse_pca = F.mse_loss(x_recon_pca, x, reduction="mean")
+            mse_pca = _masked_mse(x_recon_pca, x, valid_mask)
             total_mse_pca += mse_pca.item()
             num_batches += 1
         mse_pca = float(total_mse_pca / num_batches)

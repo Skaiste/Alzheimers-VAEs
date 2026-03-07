@@ -6,6 +6,7 @@ This script loads ADNI-B data and can be used for training models or running inf
 
 import argparse
 import json
+import math
 import pathlib
 import re
 import torch
@@ -16,8 +17,9 @@ from neuronumba.tools.filters import BandPassFilter
 from sklearn.preprocessing import StandardScaler
 
 from .utils import *
+from .utils.dict_utils import deepupdate
 from .load_data import load_adni, prepare_data_loaders
-from .models.pca import PCA
+from .models.pca import PCA, PCA_multi
 from training_tracker import TrainingResultsManager
 
 CACHED_ADNI = None
@@ -63,10 +65,9 @@ def load_data_from_config(data_dir, data_config):
         else:
             filter = None
 
+        normaliser = None
         if data_config['data'].get('normalize', False):
             normaliser = StandardScaler()
-        else:
-            normaliser = None
 
         data_loader = load_adni(
             data_dir=data_dir,
@@ -103,6 +104,7 @@ def load_data_from_config(data_dir, data_config):
         train_groups=data_config['data'].get('groups', ["HC", "MCI", "AD"]),
         timepoints_as_samples=data_config['data'].get('timepoints_as_samples', False),
         fc_input=data_config['data'].get('fc_input', False),
+        preserve_timepoints=data_config['data'].get('preserve_timepoints', False),
         split_mode=split_mode,
         datasplit_file=datasplit_file
     )
@@ -135,7 +137,10 @@ def _build_training_summary(history, mse_pca):
         best_epoch = best_index + 1
         best_val = float(val_losses[best_index])
         bvl = best_val if 'recon' not in history['val'] else float(history['val']['recon'][best_index])
-        significance = 100 * (mse_pca - bvl) / mse_pca
+        if mse_pca is not None and math.isfinite(float(mse_pca)) and float(mse_pca) != 0.0:
+            significance = 100 * (mse_pca - bvl) / mse_pca
+        else:
+            significance = None
 
     return {
         'num_epochs': max(len(train_losses), len(val_losses)),
@@ -148,64 +153,92 @@ def _build_training_summary(history, mse_pca):
     }
 
 
-def load_model_from_config(model_config, input_dim, timepoint_dim, device):
+def load_model_from_config(model_config, input_dim, timepoint_dim, device, preserve_timepoints=False):
     model_name = model_config['model']['name']
     latent_dim = 0
 
     if model_name == "BasicVAE":
         from .models.basic import BasicVAE
-        hidden_dims = model_config['model'].get('hidden_dims', [1024, 512, 256, 128])
-        hidden_dims = [int(i) for i in hidden_dims]
-        latent_dim = int(model_config['model'].get('latent_dim', 32))
+        hidden_dim = model_config['model']['hidden_dims']
+        latent_dim = model_config['model']['latent_dim']
+        if preserve_timepoints:
+            latent_dim = latent_dim * timepoint_dim
         model = BasicVAE(
             input_dim=input_dim[0],
-            hidden_dims=hidden_dims,
+            hidden_dims=hidden_dim,
             latent_dim=latent_dim,
             device=device)
-    elif model_name == "AutoencoderKL":
-        from .models.monaiAEKL import AutoencoderKL
-        latent_dim = model_config['model'].get('latent_dim', 8)
-        channels = model_config['model'].get('hidden_dims', [64, 128, 256])
-        attention_levels = model_config['model'].get('attention_levels', [False] * len(channels))
+    elif model_name == "BasicVAETimeShared":
+        if not preserve_timepoints:
+            raise ValueError("BasicVAETimeShared cannot be used if you don't want to preserve the timepoint dimension")
+        from .models.basic import BasicVAETimeShared
+        hidden_dim = model_config['model']['hidden_dims']
+        latent_dim = model_config['model']['latent_dim']
+        model = BasicVAETimeShared(
+            input_dim=input_dim[0],
+            timepoint_dim=timepoint_dim,
+            hidden_dims=hidden_dim,
+            latent_dim=latent_dim,
+            input_layout=model_config['model'].get('input_layout', "feature_time"),
+            device=device,
+        )
+        latent_dim = latent_dim * timepoint_dim
+    elif model_name.startswith("AutoencoderKL"):
+        if model_name == "AutoencoderKLv1":
+            from .models.monaiAEKL import AutoencoderKLv1 as AutoencoderKL
+        elif model_name == "AutoencoderKLv2":
+            from .models.convAE import AutoencoderKLv2 as AutoencoderKL
+        latent_dim = model_config['model']['latent_dim']
+        hidden_dim = model_config['model']['hidden_dims']
+        attention_levels = model_config['model'].get('attention_levels', [False] * len(hidden_dim))
         model = AutoencoderKL(
             spatial_dims=1,
             in_channels=input_dim[0],
             out_channels=input_dim[0],
             num_res_blocks=model_config['model'].get('num_res_blocks', 1),
-            channels=channels,
+            channels=hidden_dim,
             attention_levels=attention_levels,
             latent_channels=latent_dim,
-            norm_num_groups=model_config['model'].get('norm_num_groups', 32),
+            norm_num_groups=model_config['model'].get('norm_num_groups', 8),
             norm_eps=model_config['model'].get('norm_eps', 1e-6),
             with_encoder_nonlocal_attn=False,
             with_decoder_nonlocal_attn=False,
         )
     elif model_name == "DeterministicAE":
+        if preserve_timepoints:
+            raise ValueError("DeterministicAE is incompatible with preserving timepoint dimension (at least for now)")
         from .models.determAE import DeterministicAE
-        latent_dim = model_config['model'].get('latent_dim', 32)
+        latent_dim = model_config['model']['latent_dim']
+        hidden_dim = model_config['model']['hidden_dims']
         model = DeterministicAE(
             input_dim=input_dim[0],
-            hidden_dims=model_config['model'].get('hidden_dims', [1024, 256]),
+            hidden_dims=hidden_dim,
             latent_dim=latent_dim,
             dropout=model_config['model'].get('dropout', 0.0),
             use_batchnorm=model_config['model'].get('use_batchnorm', False),
             final_activation=model_config['model'].get('final_activation', None),
         )
     elif model_name == "Perl2023":
+        if preserve_timepoints:
+            raise ValueError("Perl2023 is incompatible with preserving timepoint dimension (at least for now)")
         from .models.perl2023 import Perl2023
-        latent_dim = model_config['model'].get('latent_dim', 2)
+        latent_dim = model_config['model']['latent_dim']
+        hidden_dim = model_config['model']['hidden_dim']
         model = Perl2023(
             input_dim=input_dim[0],
-            intermediate_dim=model_config['model'].get('hidden_dim', 1028),
+            intermediate_dim=hidden_dim,
             latent_dim=latent_dim,
             output_activation=model_config['model'].get('output_activation', 'sigmoid'),
         )
     elif model_name == "SequentialAE":
+        if preserve_timepoints:
+            raise ValueError("SequentialAE is incompatible with preserving timepoint dimension (at least for now)")
         from .models.seqAE import SequentialAE
-        latent_dim = model_config['model'].get('latent_dim', 2)
+        latent_dim = model_config['model']['latent_dim']
+        hidden_dim = model_config['model']['hidden_dim']
         model = SequentialAE(
             regions=input_dim[1],
-            hidden_dim=model_config['model'].get('hidden_dim', 256),
+            hidden_dim=hidden_dim,
             latent_dim=latent_dim,
             num_layers=model_config['model'].get('num_layers', 1),
             dropout=model_config['model'].get('dropout', 0.0),
@@ -213,13 +246,20 @@ def load_model_from_config(model_config, input_dim, timepoint_dim, device):
         )
     elif model_name == "LinearAE":
         from .models.linear import LinearAE
-        latent_dim = model_config['model'].get('latent_dim', 2)
+        latent_dim = model_config['model']['latent_dim']
+        hidden_dim = None
+        if preserve_timepoints:
+            latent_dim = latent_dim * timepoint_dim
         model = LinearAE(
             input_dim=input_dim[0],
-            latent_dim=latent_dim * timepoint_dim,
+            latent_dim=latent_dim,
         )
     else:
         raise ValueError(f"Model name {model_name} not supported")
+    
+    print("\n"+"="*60+"\n")
+    print(f"Model to train: {model_name}")
+    print(f"Parameters: {hidden_dim=}, {latent_dim=}\n")
 
     torch_device = torch.device(device)
     if "load_path" in model_config['model']:
@@ -268,7 +308,10 @@ def run_training(model, model_name, latent_dim, loaders, training_config, model_
     print(f"Experiment ID: {experiment_id}")
 
     # PCA for validation fit on the training data
-    pca = PCA(loaders['train_loader'].dataset, latent_dim)
+    if loaders['preserve_timepoints']:
+        pca = PCA_multi(loaders['train_loader'].dataset, latent_dim)
+    else:
+        pca = PCA(loaders['train_loader'].dataset, latent_dim)
     pca.fit(loaders['train_loader'].dataset.data)
 
     pathlib.Path(training_config['training']['save_dir']).mkdir(parents=True, exist_ok=True)
@@ -310,12 +353,11 @@ def run_evaluation(model, latent_dim, loaders, training_config, device, experime
     from .eval import eval_vae
 
     # Fit PCA on training data and pass it into evaluation for baseline comparison.
-    pca = PCA(loaders['train_loader'].dataset, latent_dim)
-    train_data = loaders['train_loader'].dataset.data
-    if len(train_data.shape) > 2:
-        pca.fit(train_data.reshape(train_data.shape[0], -1))
+    if loaders['preserve_timepoints']:
+        pca = PCA_multi(loaders['train_loader'].dataset, latent_dim)
     else:
-        pca.fit(train_data)
+        pca = PCA(loaders['train_loader'].dataset, latent_dim)
+    pca.fit(loaders['train_loader'].dataset.data)
 
     target_experiment_id = experiment_id or get_most_recent_experiment_id(project_path / "results" / "index.jsonl")
     print(f"Evaluating experiment: {target_experiment_id}")
@@ -440,6 +482,7 @@ def main():
             input_dim=input_dim,
             timepoint_dim=timepoint_dim,
             device=args.device,
+            preserve_timepoints=loaders.get('preserve_timepoints', False)
         )
         training_config = load_config(args.training_config)
         run_training(
@@ -473,6 +516,7 @@ def main():
             input_dim=input_dim,
             timepoint_dim=timepoint_dim,
             device=args.device,
+            preserve_timepoints=loaders.get('preserve_timepoints', False)
         )
         training_config = load_config(args.training_config)
         run_evaluation(
@@ -493,7 +537,7 @@ def main():
             if isinstance(node, dict):
                 new_node = {}
                 for k,v in node.items():
-                    new_node.update(collect_vars(v, f"{name}.{k}" if name != '' else k))
+                    deepupdate(new_node, collect_vars(v, f"{name}.{k}" if name != '' else k))
                 return new_node
             else:
                 return {name: node}
@@ -505,7 +549,7 @@ def main():
                 set_var_value(node[node_name], ch_name, value)
             elif isinstance(node, dict) and '.' not in name:
                 if isinstance(value, dict) and name in node and isinstance(node[name], dict):
-                    node[name].update(value)
+                    deepupdate(node[name], value)
                 else:
                     node[name] = value
 
@@ -518,11 +562,11 @@ def main():
             training_config = deepcopy(exp_config['default']['training'])
             # overwrite the configurations with static parameters
             if 'data' in ec['static_params']:
-                data_config.update(ec['static_params']['data'])
+                deepupdate(data_config, ec['static_params']['data'])
             if 'model' in ec['static_params']:
-                model_config.update(ec['static_params']['model'])
+                deepupdate(model_config, ec['static_params']['model'])
             if 'training' in ec['static_params']:
-                training_config.update(ec['static_params']['training'])
+                deepupdate(training_config, ec['static_params']['training'])
 
             # collect all experiment variables
             vars = collect_vars(ec['exp_params'],'')
@@ -543,10 +587,13 @@ def main():
                     data_config=dc
                 )
                 input_dim = loaders['input_dim']
+                timepoint_dim = loaders['timepoint_dim']
                 model, model_name, latent_dim = load_model_from_config(
                     model_config=mc,
                     input_dim=input_dim,
+                    timepoint_dim=timepoint_dim,
                     device=args.device,
+                    preserve_timepoints=loaders.get('preserve_timepoints', False)
                 )
                 exp_id = run_training(
                     model,

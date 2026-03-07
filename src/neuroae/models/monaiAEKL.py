@@ -3,7 +3,7 @@ import torch.nn.functional as F
 from monai.networks.nets.autoencoderkl import AutoencoderKL as MonaiAEKL
 
 
-class AutoencoderKL(MonaiAEKL):
+class AutoencoderKLv1(MonaiAEKL):
     def forward(self, x):
         # changing this to also get the latent vector
         z_mu, z_sigma = self.encode(x)
