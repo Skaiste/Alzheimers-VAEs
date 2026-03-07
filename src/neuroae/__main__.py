@@ -5,6 +5,7 @@ This script loads ADNI-B data and can be used for training models or running inf
 """
 
 import argparse
+import concurrent.futures
 import json
 import math
 import pathlib
@@ -389,6 +390,41 @@ def run_evaluation(model, latent_dim, loaders, training_config, device, experime
     return eval_metrics
 
 
+def run_experiment_pipeline(data_dir, device, data_config, model_config, training_config):
+    loaders = load_data_from_config(
+        data_dir=data_dir,
+        data_config=data_config,
+    )
+    input_dim = loaders['input_dim']
+    timepoint_dim = loaders['timepoint_dim']
+    model, model_name, latent_dim = load_model_from_config(
+        model_config=model_config,
+        input_dim=input_dim,
+        timepoint_dim=timepoint_dim,
+        device=device,
+        preserve_timepoints=loaders.get('preserve_timepoints', False)
+    )
+    exp_id = run_training(
+        model,
+        model_name,
+        latent_dim,
+        loaders,
+        training_config,
+        model_config,
+        data_config,
+        device=device,
+    )
+    run_evaluation(
+        model,
+        latent_dim,
+        loaders,
+        training_config,
+        device=device,
+        experiment_id=exp_id,
+    )
+    return exp_id
+
+
 def main():
     """Main function for training and inference."""
     parser = argparse.ArgumentParser(description='Train VAE models or run inference on ADNI-B data')
@@ -441,8 +477,16 @@ def main():
         type=str,
         help='Name of the experiment, used only in evaluation. If not provided, it uses the last trained model.'
     )
+    parser.add_argument(
+        '--num-parallel-experiments',
+        type=int,
+        default=1,
+        help='Maximum number of experiments to run concurrently in exp mode (default: 1).'
+    )
     
     args = parser.parse_args()
+    if args.num_parallel_experiments < 1:
+        parser.error('--num-parallel-experiments must be >= 1')
     
     print("=" * 60)
     print("ADNI-B VAE")
@@ -560,6 +604,7 @@ def main():
                 else:
                     node[name] = value
 
+        experiment_specs = []
         for set_name, ec in exp_config.items():
             if set_name == 'default':
                 continue
@@ -587,39 +632,53 @@ def main():
                     set_var_value({'data':dc}, vn, var)
                     set_var_value(mc, vn, var)
                     set_var_value(tc, vn, var)
+                experiment_specs.append((dc, mc, tc))
 
-                # load data
-                loaders = load_data_from_config(
+        total_experiments = len(experiment_specs)
+        print(f"Prepared {total_experiments} experiments")
+        if total_experiments == 0:
+            print("No experiments were generated from the provided config.")
+            return
+
+        max_workers = min(args.num_parallel_experiments, total_experiments)
+        if max_workers == 1:
+            for i, (dc, mc, tc) in enumerate(experiment_specs, start=1):
+                print(f"Running experiment {i}/{total_experiments}...")
+                run_experiment_pipeline(
                     data_dir=args.data_dir,
-                    data_config=dc
-                )
-                input_dim = loaders['input_dim']
-                timepoint_dim = loaders['timepoint_dim']
-                model, model_name, latent_dim = load_model_from_config(
+                    device=args.device,
+                    data_config=dc,
                     model_config=mc,
-                    input_dim=input_dim,
-                    timepoint_dim=timepoint_dim,
-                    device=args.device,
-                    preserve_timepoints=loaders.get('preserve_timepoints', False)
+                    training_config=tc,
                 )
-                exp_id = run_training(
-                    model,
-                    model_name,
-                    latent_dim,
-                    loaders,
-                    tc,
-                    mc,
-                    dc,
-                    device=args.device,
-                )
-                run_evaluation(
-                    model,
-                    latent_dim,
-                    loaders,
-                    tc,
-                    device=args.device,
-                    experiment_id=exp_id,
-                )
+        else:
+            print(f"Running up to {max_workers} experiments concurrently")
+            futures = {}
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                for i, (dc, mc, tc) in enumerate(experiment_specs, start=1):
+                    future = executor.submit(
+                        run_experiment_pipeline,
+                        args.data_dir,
+                        args.device,
+                        dc,
+                        mc,
+                        tc,
+                    )
+                    futures[future] = i
+
+                failed = []
+                for future in concurrent.futures.as_completed(futures):
+                    idx = futures[future]
+                    try:
+                        exp_id = future.result()
+                        print(f"Experiment {idx}/{total_experiments} completed: {exp_id}")
+                    except Exception as exc:
+                        failed.append((idx, exc))
+                        print(f"Experiment {idx}/{total_experiments} failed: {exc}")
+
+                if failed:
+                    failed_indexes = ", ".join(str(idx) for idx, _ in failed)
+                    raise RuntimeError(f"{len(failed)} experiment(s) failed: {failed_indexes}")
 
 
 
