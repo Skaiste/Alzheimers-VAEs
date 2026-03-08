@@ -194,10 +194,10 @@ def load_model_from_config(model_config, input_dim, timepoint_dim, device, prese
         latent_dim = model_config['model']['latent_dim']
         hidden_dim = model_config['model']['hidden_dims']
         attention_levels = model_config['model'].get('attention_levels', [False] * len(hidden_dim))
-        model = AutoencoderKL(
+        aekl_kwargs = dict(
             spatial_dims=1,
-            in_channels=input_dim[0],
-            out_channels=input_dim[0],
+            in_channels=1 if preserve_timepoints else input_dim[0],
+            out_channels=1 if preserve_timepoints else input_dim[0],
             num_res_blocks=model_config['model'].get('num_res_blocks', 1),
             channels=hidden_dim,
             attention_levels=attention_levels,
@@ -207,6 +207,9 @@ def load_model_from_config(model_config, input_dim, timepoint_dim, device, prese
             with_encoder_nonlocal_attn=False,
             with_decoder_nonlocal_attn=False,
         )
+        if model_name == "AutoencoderKLv2":
+            aekl_kwargs["time_shared"] = preserve_timepoints
+        model = AutoencoderKL(**aekl_kwargs)
     elif model_name == "DeterministicAE":
         if preserve_timepoints:
             raise ValueError("DeterministicAE is incompatible with preserving timepoint dimension (at least for now)")
