@@ -729,7 +729,7 @@ class AutoencoderKLv2(nn.Module):
         z_mu, z_sigma = self.encode(x)
         z = self.sampling(z_mu, z_sigma)
         reconstruction = self.decode(z)
-        return reconstruction, z_mu, z_sigma
+        return reconstruction, z_mu, z_sigma, z
 
     def encode_stage_2_inputs(self, x: torch.Tensor) -> torch.Tensor:
         z_mu, z_sigma = self.encode(x)
