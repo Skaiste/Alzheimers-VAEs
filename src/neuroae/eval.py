@@ -67,6 +67,15 @@ def _apply_recon_mask(x, model_output, mask):
 def _masked_mse_torch(x_hat, x, mask):
     if mask is None:
         return float(F.mse_loss(x_hat, x, reduction="mean").item())
+    if x_hat.shape != x.shape:
+        if x_hat.shape[:-1] != x.shape[:-1]:
+            raise ValueError(
+                f"Cannot align x_hat shape {tuple(x_hat.shape)} with x shape {tuple(x.shape)}."
+            )
+        common_last_dim = min(x_hat.shape[-1], x.shape[-1], mask.shape[-1])
+        x_hat = x_hat[..., :common_last_dim]
+        x = x[..., :common_last_dim]
+        mask = mask[..., :common_last_dim]
     se = (x_hat - x).pow(2) * mask
     denom = mask.sum().clamp_min(1.0)
     return float((se.sum() / denom).item())
@@ -75,6 +84,15 @@ def _masked_mse_torch(x_hat, x, mask):
 def _masked_mse_numpy(x_hat, x, mask):
     if mask is None:
         return float(np.mean((x_hat - x) ** 2))
+    if x_hat.shape != x.shape:
+        if x_hat.shape[:-1] != x.shape[:-1]:
+            raise ValueError(
+                f"Cannot align x_hat shape {x_hat.shape} with x shape {x.shape}."
+            )
+        common_last_dim = min(x_hat.shape[-1], x.shape[-1], mask.shape[-1])
+        x_hat = x_hat[..., :common_last_dim]
+        x = x[..., :common_last_dim]
+        mask = mask[..., :common_last_dim]
     se = ((x_hat - x) ** 2) * mask
     denom = np.maximum(np.sum(mask), 1.0)
     return float(np.sum(se) / denom)
